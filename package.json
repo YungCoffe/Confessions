@@ -1,7 +1,7 @@
 {
-  "name": "bot-confissoes",
+  "name": "confessions",
   "version": "1.0.0",
-  "description": "Bot de confissões para Discord multi-servidor",
+  "description": "Bot de confissões para Discord",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
