@@ -1,14 +1,17 @@
 {
   "name": "bot-confissoes",
-  "version": "1.0.0",
+  "version": "1.4.0",
   "description": "Bot de confissões otimizado para alta escala",
   "main": "index.js",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node index.js",
     "deploy": "node deploy-commands.js"
   },
   "dependencies": {
-    "discord.js": "^14.14.1",
+    "discord.js": "^14.19.3",
     "dotenv": "^16.4.5"
   }
 }

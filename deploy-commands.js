@@ -1,24 +1,28 @@
-const { REST, Routes, SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+const { REST, Routes } = require('discord.js');
 require('dotenv').config();
+const commands = require('./commands');
 
-const commands = [
-  new SlashCommandBuilder()
-    .setName('setup-confissao')
-    .setDescription('Envia o painel de confissões para este canal')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-].map(command => command.toJSON());
+const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID } = process.env;
 
-const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+if (!DISCORD_TOKEN || !CLIENT_ID) {
+  console.error('ERRO: defina DISCORD_TOKEN e CLIENT_ID no .env');
+  process.exit(1);
+}
+
+const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
 
 (async () => {
   try {
-    console.log('Registrando comandos globais...');
-    await rest.put(
-      Routes.applicationCommands(process.env.CLIENT_ID),
-      { body: commands }
-    );
-    console.log('Comando global registrado com sucesso!');
+    // Com GUILD_ID os comandos aparecem na hora; sem ele, viram globais (até ~1h)
+    const rota = GUILD_ID
+      ? Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID)
+      : Routes.applicationCommands(CLIENT_ID);
+
+    console.log(GUILD_ID ? 'Registrando comandos neste servidor...' : 'Registrando comandos globais...');
+    await rest.put(rota, { body: commands });
+    console.log('Comandos registrados com sucesso!');
   } catch (error) {
     console.error('Erro ao registrar comandos:', error);
+    process.exitCode = 1;
   }
 })();
