@@ -4,42 +4,41 @@ const { SlashCommandBuilder, PermissionFlagsBits, ChannelType } = require('disco
 module.exports = [
   new SlashCommandBuilder()
     .setName('configurar-confissoes')
-    .setDescription('Cria e configura os canais e as permissões do sistema de confissões')
+    .setDescription('Escolha os canais e o cargo Gestão do sistema de confissões')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .setDMPermission(false)
-    .addRoleOption(option =>
-      option
-        .setName('cargo-gestao')
-        .setDescription('Cargo Gestão: ele e os cargos acima aprovam/recusam e veem os canais privados')
-    )
-    .addRoleOption(option =>
-      option
-        .setName('cargo-membros')
-        .setDescription('Opcional: só este cargo vê painel e canal público (@everyone = todos veem)')
-    )
     .addChannelOption(option =>
       option
         .setName('canal-painel')
-        .setDescription('Opcional: usar um canal já existente para o painel de envio')
-        .addChannelTypes(ChannelType.GuildText)
+        .setDescription('Canal onde o painel com o botão de enviar confissão será postado')
+        .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+        .setRequired(true)
     )
     .addChannelOption(option =>
       option
         .setName('canal-analise')
-        .setDescription('Opcional: usar um canal já existente para aprovar/recusar (ficará privado)')
-        .addChannelTypes(ChannelType.GuildText)
+        .setDescription('Canal onde as confissões chegam para Aprovar/Recusar (ficará privado)')
+        .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+        .setRequired(true)
     )
     .addChannelOption(option =>
       option
-        .setName('canal-publico')
-        .setDescription('Opcional: usar um canal já existente para as confissões aprovadas')
-        .addChannelTypes(ChannelType.GuildText)
+        .setName('canal-aprovadas')
+        .setDescription('Canal onde as confissões aprovadas serão publicadas')
+        .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+        .setRequired(true)
+    )
+    .addRoleOption(option =>
+      option
+        .setName('cargo-gestao')
+        .setDescription('Cargo Gestão: ele e todos acima veem a análise e aprovam/recusam')
+        .setRequired(true)
     )
     .addChannelOption(option =>
       option
         .setName('canal-logs')
-        .setDescription('Opcional: usar um canal já existente para o registro de decisões (ficará privado)')
-        .addChannelTypes(ChannelType.GuildText)
+        .setDescription('Opcional: canal privado com o registro de decisões e consultas de autor')
+        .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
     ),
   new SlashCommandBuilder()
     .setName('setup-confissao')

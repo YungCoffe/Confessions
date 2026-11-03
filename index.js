@@ -143,6 +143,29 @@ async function registrarLog(guild, conteudo) {
   }
 }
 
+// Avisa o autor no PV. Se o PV estiver fechado, a decisão continua valendo e a Gestão é avisada no log
+// (o aviso do log traz só o código, nunca o autor).
+async function avisarAutor({ guild, registro, aprovada, canalPublico, mensagemPublica }) {
+  const codigo = citarCodigo(registro.codigo);
+  let conteudo;
+  if (aprovada) {
+    conteudo = `✅ Sua confissão foi aprovada em <#${canalPublico.id}>!\nCódigo: ${codigo}`;
+    if (mensagemPublica && mensagemPublica.url) conteudo += ` • [ver publicação](${mensagemPublica.url})`;
+  } else {
+    conteudo = `❌ Sua confissão foi recusada pela Gestão.\nCódigo: ${codigo}`;
+  }
+
+  try {
+    await client.users.send(registro.userId, { content: conteudo, allowedMentions: MENTIONS_NULAS });
+  } catch (erro) {
+    console.warn(`[PV] Não consegui avisar o autor da confissão ${registro.codigo}: ${erro.message}`);
+    await registrarLog(
+      guild,
+      `⚠️ Não consegui avisar o autor da confissão ${codigo} no PV (mensagens diretas fechadas?).`
+    );
+  }
+}
+
 const AVISO_SEM_CANAL =
   'O sistema ainda não foi configurado. Peça a um administrador para usar `/configurar-confissoes`.';
 
@@ -348,8 +371,9 @@ client.on(Events.InteractionCreate, async interaction => {
 
       return await interaction.editReply({
         content:
-          `Sua confissão foi enviada para análise. Guarde o código ${citarCodigo(registro.codigo)} ` +
-          'e acompanhe com `/minhas-confissoes`.'
+          `Sua confissão foi enviada para análise. Guarde o código ${citarCodigo(registro.codigo)}.\n` +
+          'Você será avisado no PV quando a Gestão decidir (deixe suas mensagens diretas abertas) ' +
+          'ou acompanhe com `/minhas-confissoes`.'
       });
     }
 
@@ -399,9 +423,11 @@ client.on(Events.InteractionCreate, async interaction => {
         await interaction.deferUpdate();
 
         const embedOriginal = interaction.message.embeds[0];
+        let canalPublico = null;
+        let mensagemPublica = null;
 
         if (aprovando) {
-          const canalPublico = resolverCanal(interaction.guild, 'publico');
+          canalPublico = resolverCanal(interaction.guild, 'publico');
 
           if (!canalPublico) {
             return await interaction.followUp({ content: AVISO_SEM_CANAL, flags: EPHEMERAL });
@@ -415,7 +441,7 @@ client.on(Events.InteractionCreate, async interaction => {
             .setFooter({ text: `Código ${registro.codigo}` });
 
           // Se o envio falhar, lança erro e a confissão continua pendente (dá para tentar de novo)
-          await canalPublico.send({
+          mensagemPublica = await canalPublico.send({
             embeds: [embedPublico],
             allowedMentions: MENTIONS_NULAS
           });
@@ -446,6 +472,14 @@ client.on(Events.InteractionCreate, async interaction => {
           interaction.guild,
           `${aprovando ? '✅ Aprovada' : '❌ Recusada'} — ${citarCodigo(codigo)} por <@${interaction.user.id}>`
         );
+
+        await avisarAutor({
+          guild: interaction.guild,
+          registro,
+          aprovada: aprovando,
+          canalPublico,
+          mensagemPublica
+        });
       } finally {
         emAndamento.delete(codigo);
       }

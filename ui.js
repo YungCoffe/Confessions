@@ -16,7 +16,8 @@ function painelConfissoes() {
     .setDescription(
       'Clique no botão abaixo (ou use `/confissao`) para enviar uma confissão de forma anônima.\n' +
         'Ela será analisada pela **Gestão e por cargos acima** antes de ser publicada.\n\n' +
-        'Você recebe um **código de rastreio** para consultar o status com `/minhas-confissoes`.'
+        'Você recebe um **código de rastreio** e será avisado no **PV** quando ela for aprovada ou recusada ' +
+        '(deixe suas mensagens diretas abertas). Também dá para consultar com `/minhas-confissoes`.'
     )
     .setColor('#5865F2');
 
