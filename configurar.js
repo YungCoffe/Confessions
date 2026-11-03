@@ -94,12 +94,12 @@ function listarCargos(cargos, limite = 700) {
 async function configurarCanais(interaction) {
   const { guild, options } = interaction;
   await interaction.deferReply({ flags: EPHEMERAL });
-
-  const motivo = `Configuração das confissões por ${interaction.user.tag}`;
-  const configAnterior = db.obterConfig(guild.id);
   const responder = content => interaction.editReply({ content });
 
   try {
+    const motivo = `Configuração das confissões por ${interaction.user.tag}`;
+    const configAnterior = db.obterConfig(guild.id);
+
     // 1. Cargo Gestão --------------------------------------------------------
     const escolhido = options.getRole('cargo-gestao', true);
     const gestao = guild.roles.cache.get(escolhido.id);

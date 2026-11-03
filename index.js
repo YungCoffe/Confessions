@@ -194,8 +194,28 @@ function mensagemDeErro(error, interaction) {
 // ---------------------------------------------------------------------------
 // Interações (apenas slash + botões/modal — nenhum comando de texto)
 // ---------------------------------------------------------------------------
+const AVISO_BOT_FORA_DO_SERVIDOR =
+  'O bot não está como **membro** deste servidor, então não consegue funcionar aqui. ' +
+  'Peça a um administrador para convidar o bot de novo com o escopo **bot** (o link está no README).';
+
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.inGuild()) return;
+
+  // O Discord entrega o comando se o app foi autorizado só com "applications.commands",
+  // mas sem o escopo "bot" o servidor não existe para o bot (interaction.guild fica null).
+  if (!interaction.guild) {
+    console.error(
+      `[ERRO] O bot não está no servidor ${interaction.guildId}: convide com o escopo "bot" (e confira o GUILD_ID).`
+    );
+    try {
+      if (interaction.isRepliable()) {
+        await interaction.reply({ content: AVISO_BOT_FORA_DO_SERVIDOR, flags: EPHEMERAL });
+      }
+    } catch (_) {
+      // interação expirou
+    }
+    return;
+  }
 
   try {
     // 1. /configurar-confissoes — cria canais e define quem vê cada um
@@ -550,6 +570,18 @@ client.on(Events.InteractionCreate, async interaction => {
 // então isso dispensa rodar `npm run deploy` manualmente. AUTO_DEPLOY=false desativa.
 client.once(Events.ClientReady, async () => {
   console.log(`[BOT] Conectado como ${client.user.tag}`);
+
+  // Os nomes chegam um instante depois do READY; este log mostra em quais servidores o bot realmente está
+  setTimeout(() => {
+    const lista = client.guilds.cache.map(g => `${g.name} (${g.id})`).join(', ') || 'nenhum';
+    console.log(`[BOT] Está em ${client.guilds.cache.size} servidor(es): ${lista}`);
+    if (process.env.GUILD_ID && !client.guilds.cache.has(process.env.GUILD_ID)) {
+      console.warn(
+        `[AVISO] O bot NÃO está no servidor GUILD_ID=${process.env.GUILD_ID}. ` +
+          'Convide o bot com o escopo "bot" (link no README) ou corrija o GUILD_ID.'
+      );
+    }
+  }, 5000).unref();
 
   const stats = db.estatisticas();
   console.log(

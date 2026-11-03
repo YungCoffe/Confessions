@@ -114,6 +114,7 @@ Quando algo falha, o bot responde com o motivo (Gestão+ vê também o detalhe t
 | --- | --- |
 | "Não consegui publicar em #canal..." | O bot precisa de **Ver Canal, Enviar Mensagens e Inserir Links** no canal de aprovadas |
 | "O bot não tem permissão para fazer isso neste canal" | Confira as permissões do bot no canal em questão |
+| "O bot não está como membro deste servidor" | Convide o bot de novo pelo link do README (precisa do escopo **bot**, não só `applications.commands`) e confira o `GUILD_ID` |
 | "O sistema ainda não foi configurado" | Um administrador precisa rodar `/configurar-confissoes` |
 | "Confissão ... não encontrada no banco" | O banco foi apagado (host sem disco): use `DATA_DIR` com disco persistente |
 
