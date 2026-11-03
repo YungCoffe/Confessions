@@ -105,6 +105,18 @@ Os canais nunca são procurados pelo nome.
 - **Aviso no PV** sem travar a Gestão: a decisão é salva antes, e PV fechado não atrapalha nada.
 - Sharding só é exigido a partir de 2.500 servidores; um servidor de 250k roda em 1 shard.
 
+## Problemas comuns
+
+Quando algo falha, o bot responde com o motivo (Gestão+ vê também o detalhe técnico) e o log
+(`[ERRO] Falha na interação (...)`) mostra qual comando ou botão causou.
+
+| Mensagem | O que fazer |
+| --- | --- |
+| "Não consegui publicar em #canal..." | O bot precisa de **Ver Canal, Enviar Mensagens e Inserir Links** no canal de aprovadas |
+| "O bot não tem permissão para fazer isso neste canal" | Confira as permissões do bot no canal em questão |
+| "O sistema ainda não foi configurado" | Um administrador precisa rodar `/configurar-confissoes` |
+| "Confissão ... não encontrada no banco" | O banco foi apagado (host sem disco): use `DATA_DIR` com disco persistente |
+
 ## Rodar localmente
 
 ```bash

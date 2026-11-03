@@ -169,6 +169,28 @@ async function avisarAutor({ guild, registro, aprovada, canalPublico, mensagemPu
 const AVISO_SEM_CANAL =
   'O sistema ainda não foi configurado. Peça a um administrador para usar `/configurar-confissoes`.';
 
+// Traduz erros da API do Discord para algo que dê para agir. Quem é Gestão+ vê também o detalhe técnico.
+const DICAS_API = {
+  50013: 'O bot não tem permissão para fazer isso neste canal.',
+  50001: 'O bot não enxerga um dos canais necessários.',
+  10003: 'Um dos canais configurados não existe mais (foi apagado?).',
+  10008: 'A mensagem não existe mais.',
+  10062: 'A interação expirou. Tente de novo.'
+};
+
+function mensagemDeErro(error, interaction) {
+  const base = DICAS_API[error && error.code] || 'Ocorreu um erro ao processar. Tente novamente.';
+  try {
+    if (podeAprovar(interaction)) {
+      const detalhe = String((error && error.message) || error).slice(0, 200);
+      return `${base}\n-# Detalhe (só Gestão+): ${detalhe}${error && error.code ? ` [código ${error.code}]` : ''}`;
+    }
+  } catch (_) {
+    // sem detalhe técnico
+  }
+  return base;
+}
+
 // ---------------------------------------------------------------------------
 // Interações (apenas slash + botões/modal — nenhum comando de texto)
 // ---------------------------------------------------------------------------
@@ -197,7 +219,16 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       await interaction.deferReply({ flags: EPHEMERAL });
-      await interaction.channel.send(painelConfissoes());
+      try {
+        await interaction.channel.send(painelConfissoes());
+      } catch (erro) {
+        console.error('[ERRO] Não consegui enviar o painel:', erro);
+        return await interaction.editReply({
+          content:
+            'Não consegui enviar o painel neste canal. O bot precisa de **Ver Canal, Enviar Mensagens e Inserir Links** aqui.\n' +
+            `-# Detalhe: ${String((erro && erro.message) || erro).slice(0, 150)}`
+        });
+      }
       return await interaction.editReply({ content: 'Painel de confissões criado com sucesso!' });
     }
 
@@ -440,11 +471,22 @@ client.on(Events.InteractionCreate, async interaction => {
             .setTimestamp()
             .setFooter({ text: `Código ${registro.codigo}` });
 
-          // Se o envio falhar, lança erro e a confissão continua pendente (dá para tentar de novo)
-          mensagemPublica = await canalPublico.send({
-            embeds: [embedPublico],
-            allowedMentions: MENTIONS_NULAS
-          });
+          // Se o envio falhar, a confissão continua pendente (dá para tentar de novo)
+          try {
+            mensagemPublica = await canalPublico.send({
+              embeds: [embedPublico],
+              allowedMentions: MENTIONS_NULAS
+            });
+          } catch (erro) {
+            console.error(`[ERRO] Não consegui publicar a confissão ${codigo} em #${canalPublico.name}:`, erro);
+            return await interaction.followUp({
+              content:
+                `Não consegui publicar em <#${canalPublico.id}>. Confira se o bot tem **Ver Canal, Enviar Mensagens ` +
+                'e Inserir Links** nesse canal e tente de novo. A confissão continua pendente.\n' +
+                `-# Detalhe: ${String((erro && erro.message) || erro).slice(0, 150)}`,
+              flags: EPHEMERAL
+            });
+          }
         }
 
         db.atualizar(codigo, {
@@ -485,18 +527,18 @@ client.on(Events.InteractionCreate, async interaction => {
       }
     }
   } catch (error) {
-    console.error('[ERRO] Falha na interação:', error);
+    const quem = interaction.isChatInputCommand()
+      ? `/${interaction.commandName}`
+      : interaction.customId || `tipo ${interaction.type}`;
+    console.error(`[ERRO] Falha na interação (${quem}):`, error);
+
+    const texto = mensagemDeErro(error, interaction);
     try {
       if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-        await interaction.reply({
-          content: 'Ocorreu um erro ao processar. Tente novamente.',
-          flags: EPHEMERAL
-        });
+        await interaction.reply({ content: texto, flags: EPHEMERAL });
       } else if (interaction.deferred && !interaction.replied) {
-        await interaction.followUp({
-          content: 'Ocorreu um erro ao processar. Tente novamente.',
-          flags: EPHEMERAL
-        });
+        // Já houve defer e ainda não houve resposta: followUp ocupa o lugar do "pensando..."
+        await interaction.followUp({ content: texto, flags: EPHEMERAL });
       }
     } catch (_) {
       // interação já expirou; nada a fazer
