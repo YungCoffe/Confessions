@@ -1,23 +1,24 @@
 const {
   Client,
   GatewayIntentBits,
+  Options,
+  Events,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
   PermissionFlagsBits,
   MessageFlags,
   REST,
   Routes
 } = require('discord.js');
-require('dotenv').config();
+require('dotenv').config(); // precisa vir antes de db/permissoes/configurar (eles leem o .env ao carregar)
 const { iniciarServidor } = require('./servidor');
 const commands = require('./commands');
 const db = require('./db');
 const { podeAprovar } = require('./permissoes');
+const { painelConfissoes, modalConfissao, EMOJI_STATUS } = require('./ui');
+const { configurarCanais, resolverCanal } = require('./configurar');
 
 if (!process.env.DISCORD_TOKEN) {
   console.error('ERRO: variável DISCORD_TOKEN não definida no .env');
@@ -25,12 +26,37 @@ if (!process.env.DISCORD_TOKEN) {
 }
 
 // ---------------------------------------------------------------------------
-// Cliente otimizado para servidores grandes (250k membros)
-// - Só o intent Guilds: o bot não lê mensagens, então não faz cache delas.
-//   Isso dispensa partials e sweepers e reduz muito RAM e tráfego de gateway.
+// Cliente otimizado para servidores enormes (250k+ membros)
+// - Só o intent Guilds: o bot não lê mensagens nem membros, então o Discord não
+//   envia esse tráfego todo (nada de intents privilegiados).
+// - Cache no limite mínimo: mensagens, presenças, reações, threads etc. nem entram.
+//   Cargos e canais (poucos) ficam em cache; membros/usuários só os últimos 100,
+//   senão cada pessoa que clica num botão ficaria na RAM para sempre.
+// - Nenhuma menção dispara ping por padrão.
 // ---------------------------------------------------------------------------
+const soOMeuBot = item => item.id === item.client.user?.id;
+
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [GatewayIntentBits.Guilds],
+  allowedMentions: { parse: [], repliedUser: false },
+  makeCache: Options.cacheWithLimits({
+    MessageManager: 0,
+    PresenceManager: 0,
+    ReactionManager: 0,
+    ReactionUserManager: 0,
+    VoiceStateManager: 0,
+    StageInstanceManager: 0,
+    ThreadManager: 0,
+    ThreadMemberManager: 0,
+    GuildScheduledEventManager: 0,
+    GuildInviteManager: 0,
+    GuildBanManager: 0,
+    GuildStickerManager: 0,
+    GuildEmojiManager: 0,
+    AutoModerationRuleManager: 0,
+    GuildMemberManager: { maxSize: 100, keepOverLimit: soOMeuBot },
+    UserManager: { maxSize: 100, keepOverLimit: soOMeuBot }
+  })
 });
 
 // Nenhuma confissão consegue disparar ping (@everyone, @cargo, @usuário)
@@ -39,19 +65,23 @@ const MENTIONS_NULAS = { parse: [] };
 // Evita que duas pessoas tratem a mesma confissão ao mesmo tempo
 const emAndamento = new Set();
 
-// Cooldown em memória: custo zero e reinício limpo não é problema
+// Cooldown em memória: custo zero; reinício limpo não é problema
 const ultimoEnvio = new Map();
 
-const NOME_CANAL_ANALISE = 'analise-confissoes';
-const NOME_CANAL_PUBLICO = 'confissoes';
 const COOLDOWN_SEGUNDOS = Math.max(
   0,
   Number.parseInt(process.env.COOLDOWN_CONFISSAO ?? '120', 10) || 0
 );
 const LIMITE_DIARIO = Math.max(0, Number.parseInt(process.env.LIMITE_DIARIO ?? '10', 10) || 0);
-
-const EMOJI_STATUS = { pendente: '⏳', aprovada: '✅', recusada: '❌' };
 const EPHEMERAL = MessageFlags.Ephemeral;
+
+// Sem isso o Map cresceria com cada pessoa que já enviou algo
+setInterval(() => {
+  const limite = Date.now() - COOLDOWN_SEGUNDOS * 1000;
+  for (const [userId, quando] of ultimoEnvio) {
+    if (quando < limite) ultimoEnvio.delete(userId);
+  }
+}, 10 * 60 * 1000).unref();
 
 // ---------------------------------------------------------------------------
 // Servidor HTTP: mantém o Web Service vivo e entrega os links de monitoramento
@@ -72,27 +102,11 @@ function statusAtual() {
   };
 }
 
-iniciarServidor({ porta: PORT, status: statusAtual });
+const servidorHttp = iniciarServidor({ porta: PORT, status: statusAtual });
 
 // ---------------------------------------------------------------------------
 // Utilidades
 // ---------------------------------------------------------------------------
-function resolverCanal(guild, idOpcional, nomePadrao) {
-  if (idOpcional) {
-    const canal = guild.channels.cache.get(idOpcional);
-    if (canal && canal.isTextBased()) return canal;
-  }
-  return guild.channels.cache.find(c => c.name === nomePadrao && c.isTextBased()) || null;
-}
-
-async function obterMember(interaction) {
-  if (interaction.member && interaction.member.roles && interaction.member.roles.cache) {
-    return interaction.member;
-  }
-  // Fallback raro: membro não veio resolvido no payload da interação
-  return await interaction.guild.members.fetch(interaction.user.id);
-}
-
 function citarCodigo(codigo) {
   return `\`${codigo}\``;
 }
@@ -118,50 +132,39 @@ function checarLimites(userId) {
   return null;
 }
 
-function painelConfissoes() {
-  const embed = new EmbedBuilder()
-    .setTitle('🔒 Painel de Confissões')
-    .setDescription(
-      'Clique no botão abaixo (ou use `/confissao`) para enviar uma confissão de forma anônima.\n' +
-      'Ela será analisada pela **Gestão e por cargos acima** antes de ser publicada.\n\n' +
-      'Você recebe um **código de rastreio** para consultar o status com `/minhas-confissoes`.'
-    )
-    .setColor('#5865F2');
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('abrir_modal_confissao')
-      .setLabel('Enviar Confissão')
-      .setStyle(ButtonStyle.Primary)
-      .setEmoji('📝')
-  );
-
-  return { embeds: [embed], components: [row] };
+// Registro de decisões e consultas de autor (canal privado da Gestão+). Nunca derruba o fluxo.
+async function registrarLog(guild, conteudo) {
+  try {
+    const canal = resolverCanal(guild, 'logs');
+    if (!canal) return;
+    await canal.send({ content: conteudo, allowedMentions: MENTIONS_NULAS });
+  } catch (erro) {
+    console.error('[LOG] Não consegui escrever no canal de logs:', erro.message);
+  }
 }
 
-function modalConfissao() {
-  const inputTexto = new TextInputBuilder()
-    .setCustomId('texto_confissao')
-    .setLabel('Sua Confissão (até 2000 caracteres)')
-    .setStyle(TextInputStyle.Paragraph)
-    .setPlaceholder('Escreva aqui...')
-    .setRequired(true)
-    .setMaxLength(2000);
-
-  return new ModalBuilder()
-    .setCustomId('modal_confissao')
-    .setTitle('Escreva sua Confissão')
-    .addComponents(new ActionRowBuilder().addComponents(inputTexto));
-}
+const AVISO_SEM_CANAL =
+  'O sistema ainda não foi configurado. Peça a um administrador para usar `/configurar-confissoes`.';
 
 // ---------------------------------------------------------------------------
 // Interações (apenas slash + botões/modal — nenhum comando de texto)
 // ---------------------------------------------------------------------------
-client.on('interactionCreate', async interaction => {
+client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.inGuild()) return;
 
   try {
-    // 1. /setup-confissao — cria o painel
+    // 1. /configurar-confissoes — cria canais e define quem vê cada um
+    if (interaction.isChatInputCommand() && interaction.commandName === 'configurar-confissoes') {
+      if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
+        return await interaction.reply({
+          content: 'Você precisa ser Administrador para usar este comando.',
+          flags: EPHEMERAL
+        });
+      }
+      return await configurarCanais(interaction);
+    }
+
+    // 2. /setup-confissao — envia o painel no canal atual
     if (interaction.isChatInputCommand() && interaction.commandName === 'setup-confissao') {
       if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
         return await interaction.reply({
@@ -175,12 +178,12 @@ client.on('interactionCreate', async interaction => {
       return await interaction.editReply({ content: 'Painel de confissões criado com sucesso!' });
     }
 
-    // 2. /confissao — abre o modal direto pelo slash
+    // 3. /confissao — abre o modal direto pelo slash
     if (interaction.isChatInputCommand() && interaction.commandName === 'confissao') {
       return await interaction.showModal(modalConfissao());
     }
 
-    // 3. /minhas-confissoes — o autor acompanha seus códigos e status
+    // 4. /minhas-confissoes — o autor acompanha seus códigos e status
     if (interaction.isChatInputCommand() && interaction.commandName === 'minhas-confissoes') {
       const registros = db.listarDoUsuario(interaction.user.id, 10);
 
@@ -209,10 +212,9 @@ client.on('interactionCreate', async interaction => {
       return await interaction.reply({ embeds: [embed], flags: EPHEMERAL });
     }
 
-    // 4. /autor-confissao — Gestão+ descobre o autor pelo código de rastreio
+    // 5. /autor-confissao — Gestão+ descobre o autor pelo código de rastreio
     if (interaction.isChatInputCommand() && interaction.commandName === 'autor-confissao') {
-      const member = await obterMember(interaction);
-      if (!podeAprovar(member, interaction.guild)) {
+      if (!podeAprovar(interaction)) {
         return await interaction.reply({
           content: 'Apenas a **Gestão, cargos acima dela** (ou Administradores) podem consultar autores.',
           flags: EPHEMERAL
@@ -236,7 +238,11 @@ client.on('interactionCreate', async interaction => {
         .setTitle(`🔎 Confissão ${registro.codigo}`)
         .setColor('#EB459E')
         .addFields(
-          { name: 'Autor', value: `${registro.autorTag}\n\`${registro.userId}\``, inline: true },
+          {
+            name: 'Autor',
+            value: `<@${registro.userId}>\n${registro.autorTag}\n\`${registro.userId}\``,
+            inline: true
+          },
           {
             name: 'Status',
             value: `${EMOJI_STATUS[registro.status] || '❔'} ${registro.status}`,
@@ -253,15 +259,20 @@ client.on('interactionCreate', async interaction => {
         });
       }
 
-      return await interaction.reply({ embeds: [embed], flags: EPHEMERAL });
+      await interaction.reply({ embeds: [embed], flags: EPHEMERAL });
+      // Só o fato da consulta vai para o canal de logs; o autor nunca aparece lá
+      return await registrarLog(
+        interaction.guild,
+        `🔎 <@${interaction.user.id}> consultou o autor da confissão ${citarCodigo(registro.codigo)}`
+      );
     }
 
-    // 5. Botão do painel — abre o modal
+    // 6. Botão do painel — abre o modal
     if (interaction.isButton() && interaction.customId === 'abrir_modal_confissao') {
       return await interaction.showModal(modalConfissao());
     }
 
-    // 6. Modal enviado — cria o registro e encaminha para o canal de análise
+    // 7. Modal enviado — cria o registro e encaminha para o canal de análise
     if (interaction.isModalSubmit() && interaction.customId === 'modal_confissao') {
       await interaction.deferReply({ flags: EPHEMERAL });
 
@@ -270,26 +281,22 @@ client.on('interactionCreate', async interaction => {
         return await interaction.editReply({ content: 'A confissão não pode ficar vazia.' });
       }
 
-      const bloqueio = checarLimites(interaction.user.id);
+      const userId = interaction.user.id;
+      const bloqueio = checarLimites(userId);
       if (bloqueio) {
         return await interaction.editReply({ content: bloqueio });
       }
 
-      const canalAnalise = resolverCanal(
-        interaction.guild,
-        process.env.ANALISE_CHANNEL_ID,
-        NOME_CANAL_ANALISE
-      );
-
+      const canalAnalise = resolverCanal(interaction.guild, 'analise');
       if (!canalAnalise) {
-        return await interaction.editReply({
-          content:
-            'Erro: crie um canal de texto chamado `analise-confissoes` (ou defina ANALISE_CHANNEL_ID no .env).'
-        });
+        return await interaction.editReply({ content: AVISO_SEM_CANAL });
       }
 
+      // Reserva o cooldown AGORA (antes de qualquer await): dois envios simultâneos não passam juntos
+      ultimoEnvio.set(userId, Date.now());
+
       const registro = db.criarConfissao({
-        userId: interaction.user.id,
+        userId,
         autorTag: interaction.user.tag,
         guildId: interaction.guild.id,
         texto
@@ -331,12 +338,13 @@ client.on('interactionCreate', async interaction => {
         });
       } catch (erro) {
         console.error('[ERRO] Falha ao enviar para o canal de análise:', erro);
+        // Desfaz: sem mensagem no canal não existe confissão (nada de pendente fantasma contando no limite)
+        db.remover(registro.codigo);
+        ultimoEnvio.delete(userId);
         return await interaction.editReply({
           content: 'Erro ao enviar sua confissão para análise. Tente novamente mais tarde.'
         });
       }
-
-      ultimoEnvio.set(interaction.user.id, Date.now());
 
       return await interaction.editReply({
         content:
@@ -345,7 +353,7 @@ client.on('interactionCreate', async interaction => {
       });
     }
 
-    // 7. Botões de aprovar/recusar — Gestão e cargos acima
+    // 8. Botões de aprovar/recusar — Gestão e cargos acima
     if (
       interaction.isButton() &&
       (interaction.customId.startsWith('aprovar_') || interaction.customId.startsWith('recusar_'))
@@ -356,8 +364,7 @@ client.on('interactionCreate', async interaction => {
         .trim()
         .toUpperCase();
 
-      const member = await obterMember(interaction);
-      if (!podeAprovar(member, interaction.guild)) {
+      if (!podeAprovar(interaction)) {
         return await interaction.reply({
           content:
             'Apenas a **Gestão, cargos acima dela** (ou Administradores) podem aprovar ou recusar.',
@@ -394,18 +401,10 @@ client.on('interactionCreate', async interaction => {
         const embedOriginal = interaction.message.embeds[0];
 
         if (aprovando) {
-          const canalPublico = resolverCanal(
-            interaction.guild,
-            process.env.PUBLIC_CHANNEL_ID,
-            NOME_CANAL_PUBLICO
-          );
+          const canalPublico = resolverCanal(interaction.guild, 'publico');
 
           if (!canalPublico) {
-            return await interaction.followUp({
-              content:
-                'Erro: canal público `confissoes` não encontrado (ou defina PUBLIC_CHANNEL_ID no .env).',
-              flags: EPHEMERAL
-            });
+            return await interaction.followUp({ content: AVISO_SEM_CANAL, flags: EPHEMERAL });
           }
 
           const embedPublico = new EmbedBuilder()
@@ -415,39 +414,38 @@ client.on('interactionCreate', async interaction => {
             .setTimestamp()
             .setFooter({ text: `Código ${registro.codigo}` });
 
+          // Se o envio falhar, lança erro e a confissão continua pendente (dá para tentar de novo)
           await canalPublico.send({
             embeds: [embedPublico],
             allowedMentions: MENTIONS_NULAS
           });
-
-          db.atualizar(codigo, {
-            status: 'aprovada',
-            decididoEm: Date.now(),
-            decididoPor: interaction.user.tag,
-            decididoPorId: interaction.user.id
-          });
-
-          const embedAtualizado = EmbedBuilder.from(embedOriginal)
-            .setTitle('✅ Confissão Aprovada')
-            .setColor('#57F287')
-            .addFields({ name: 'Aprovada por', value: `${interaction.user.tag}` });
-
-          await interaction.message.edit({ embeds: [embedAtualizado], components: [] });
-        } else {
-          db.atualizar(codigo, {
-            status: 'recusada',
-            decididoEm: Date.now(),
-            decididoPor: interaction.user.tag,
-            decididoPorId: interaction.user.id
-          });
-
-          const embedAtualizado = EmbedBuilder.from(embedOriginal)
-            .setTitle('❌ Confissão Recusada')
-            .setColor('#ED4245')
-            .addFields({ name: 'Recusada por', value: `${interaction.user.tag}` });
-
-          await interaction.message.edit({ embeds: [embedAtualizado], components: [] });
         }
+
+        db.atualizar(codigo, {
+          status: aprovando ? 'aprovada' : 'recusada',
+          decididoEm: Date.now(),
+          decididoPor: interaction.user.tag,
+          decididoPorId: interaction.user.id
+        });
+
+        // A decisão já está salva; falha ao atualizar a mensagem não pode virar "erro" para quem clicou
+        try {
+          const embedAtualizado = EmbedBuilder.from(embedOriginal)
+            .setTitle(aprovando ? '✅ Confissão Aprovada' : '❌ Confissão Recusada')
+            .setColor(aprovando ? '#57F287' : '#ED4245')
+            .addFields({
+              name: aprovando ? 'Aprovada por' : 'Recusada por',
+              value: `${interaction.user.tag}`
+            });
+          await interaction.editReply({ embeds: [embedAtualizado], components: [] });
+        } catch (erro) {
+          console.error('[ERRO] Decisão salva, mas não consegui atualizar a mensagem:', erro.message);
+        }
+
+        await registrarLog(
+          interaction.guild,
+          `${aprovando ? '✅ Aprovada' : '❌ Recusada'} — ${citarCodigo(codigo)} por <@${interaction.user.id}>`
+        );
       } finally {
         emAndamento.delete(codigo);
       }
@@ -474,7 +472,7 @@ client.on('interactionCreate', async interaction => {
 
 // Registro automático dos slash commands ao iniciar — no Render não há shell,
 // então isso dispensa rodar `npm run deploy` manualmente. AUTO_DEPLOY=false desativa.
-client.once('clientReady', async () => {
+client.once(Events.ClientReady, async () => {
   console.log(`[BOT] Conectado como ${client.user.tag}`);
 
   const stats = db.estatisticas();
@@ -508,7 +506,34 @@ client.once('clientReady', async () => {
   }
 });
 
-client.on('error', error => console.error('[ERRO] Client:', error));
+// ---------------------------------------------------------------------------
+// Diagnóstico de conexão e encerramento limpo
+// ---------------------------------------------------------------------------
+client.on(Events.Error, error => console.error('[ERRO] Client:', error));
+client.on(Events.ShardError, error => console.error('[GATEWAY] Erro no shard:', error && error.message));
+client.on(Events.ShardDisconnect, (evento, id) =>
+  console.warn(`[GATEWAY] Shard ${id} desconectou (código ${evento && evento.code})`)
+);
+client.on(Events.ShardReconnecting, id => console.warn(`[GATEWAY] Shard ${id} reconectando...`));
+client.on(Events.Invalidated, () => {
+  console.error('[GATEWAY] Sessão invalidada. Encerrando para o host reiniciar o bot.');
+  process.exit(1);
+});
 process.on('unhandledRejection', error => console.error('[ERRO] unhandledRejection:', error));
 
-client.login(process.env.DISCORD_TOKEN);
+async function encerrar(sinal) {
+  console.log(`[BOT] ${sinal} recebido, encerrando...`);
+  try {
+    servidorHttp.close();
+    await client.destroy();
+  } finally {
+    process.exit(0); // o banco grava cada mudança na hora: não há nada pendente para salvar
+  }
+}
+process.once('SIGTERM', () => encerrar('SIGTERM'));
+process.once('SIGINT', () => encerrar('SIGINT'));
+
+client.login(process.env.DISCORD_TOKEN).catch(error => {
+  console.error('[ERRO] Falha no login (token inválido ou Discord inacessível):', error.message);
+  process.exit(1);
+});

@@ -1,7 +1,7 @@
 {
   "name": "bot-confissoes",
-  "version": "1.4.0",
-  "description": "Bot de confissões otimizado para alta escala",
+  "version": "1.5.0",
+  "description": "Bot de confissões anônimas com aprovação da Gestão, otimizado para servidores de 250k+ membros",
   "main": "index.js",
   "engines": {
     "node": ">=18"
