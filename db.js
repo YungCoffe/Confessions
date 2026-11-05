@@ -222,13 +222,14 @@ function normalizar(codigo) {
 // ---------------------------------------------------------------------------
 // Confissões
 // ---------------------------------------------------------------------------
-function criarConfissao({ userId, autorTag, guildId, texto }) {
+function criarConfissao({ userId, autorTag, guildId, texto, mensagem }) {
   const registro = {
     codigo: gerarCodigo(),
     userId,
     autorTag, // vínculo com o autor: existe SOMENTE aqui, nunca no canal de análise nem no público
     guildId,
     texto,
+    mensagem: mensagem || null, // recado opcional enviado junto da confissão
     status: 'pendente', // pendente | aprovada | recusada
     criadoEm: Date.now(),
     decididoEm: null,

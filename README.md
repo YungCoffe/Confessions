@@ -1,23 +1,26 @@
 # Bot de Confissões
 
 Bot de confissões anônimas em Node.js (discord.js v14), feito para servidores enormes
-(250k+ membros): só comandos slash, cache no mínimo, banco rápido e aprovação pela Gestão.
+(250k+ membros): só **dois comandos** slash (`/configurar-confissoes` e `/autor-confissao`), o resto
+por botões no painel, cache no mínimo, banco rápido e aprovação pela Gestão.
 
 ## Como funciona
 
 1. Um Administrador roda `/configurar-confissoes` e **escolhe**: o canal do painel, o canal de
    análise, o canal das confissões aprovadas e o **cargo Gestão**. O bot não cria nem adivinha nada.
 2. O bot posta o painel e deixa a análise visível **só para a Gestão e todos os cargos acima dela**.
-3. Qualquer membro clica em **Enviar Confissão** (ou usa `/confissao`) e escreve o texto.
+3. Qualquer membro clica em **Enviar Confissão** no painel e escreve o texto. Se quiser, pode
+   preencher também o campo **Mensagem junto da confissão (opcional)** — um recado que vai junto.
 4. O bot gera um **código de rastreio** (ex.: `4K7P2M`) e manda para o canal de análise apenas
-   o texto e o código — **o autor não aparece no Discord**.
-5. Quem é **Gestão ou acima** (ou Administrador) clica em **Aprovar** ou **Recusar**.
+   o texto, a mensagem (se houver) e o código — **o autor não aparece no Discord**.
+5. Quem é **Gestão ou acima** (ou Administrador) clica em **Aprovar** ou **Recusar**. Ao aprovar,
+   a confissão é publicada junto da mensagem opcional (quando a pessoa escreveu uma).
 6. O autor recebe **aviso no PV**:
    - aprovada: `✅ Sua confissão foi aprovada em #canal!` (com link da publicação);
    - recusada: `❌ Sua confissão foi recusada pela Gestão.`
 
    Se o PV do autor estiver fechado, a decisão vale do mesmo jeito e o canal de logs (se houver)
-   registra o aviso, sem revelar quem é. O autor também pode usar `/minhas-confissoes`.
+   registra o aviso, sem revelar quem é. O autor também pode clicar em **Minhas Confissões** no painel.
 7. O vínculo `código → autor` fica **somente no banco**. A Gestão+ identifica o autor com
    `/autor-confissao codigo` (a consulta é registrada no canal de logs, sem revelar o autor).
 
@@ -62,11 +65,19 @@ Bot de confissões anônimas em Node.js (discord.js v14), feito para servidores 
 
 | Comando | Quem usa | Para que serve |
 | --- | --- | --- |
-| `/configurar-confissoes` | Administrador | Escolhe canais e cargo Gestão, posta o painel |
-| `/setup-confissao` | Administrador | Reenvia o painel no canal atual |
-| `/confissao` | Todos | Abre o formulário de confissão |
-| `/minhas-confissoes` | Todos | Mostra códigos e status (só você vê) |
+| `/configurar-confissoes` | Administrador | Escolhe canais e cargo Gestão, deixa a análise privada, posta (ou atualiza) o painel |
 | `/autor-confissao` | Gestão ou acima | Identifica o autor de um código (fica registrado) |
+
+Os outros recursos ficam no **painel**, por botões (sem comando):
+
+| Botão | Quem usa | Para que serve |
+| --- | --- | --- |
+| 📝 Enviar Confissão | Todos | Abre o formulário (confissão + mensagem opcional) |
+| 📨 Minhas Confissões | Todos | Mostra códigos e status (só você vê) |
+| Aprovar / Recusar | Gestão ou acima | Decidem na mensagem de análise |
+
+Para reenviar ou atualizar o painel, rode `/configurar-confissoes` de novo: ele edita o painel
+existente (e é assim que o painel antigo ganha o botão **Minhas Confissões**).
 
 ## Configuração (.env)
 
@@ -178,7 +189,7 @@ para não gerar alarme falso no restart.
 - `index.js` — bot: interações, análise, aprovação/recusa, logs, cliente enxuto.
 - `configurar.js` — `/configurar-confissoes`: valida a escolha, deixa a análise privada para Gestão+, posta o painel.
 - `permissoes.js` — regra "Gestão ou acima" e lista de cargos com acesso.
-- `ui.js` — painel e formulário.
+- `ui.js` — painel (botões) e formulário (confissão + mensagem opcional).
 - `db.js` — banco append-only com códigos de rastreio e configuração por servidor.
 - `servidor.js` — HTTP: `/ping`, `/health` e página de status.
 - `commands.js` — definição dos slash commands (fonte única).

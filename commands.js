@@ -1,6 +1,8 @@
 const { SlashCommandBuilder, PermissionFlagsBits, ChannelType } = require('discord.js');
 
-// Fonte única dos slash commands (usada pelo bot e pelo script de deploy)
+// Fonte única dos slash commands (usada pelo bot e pelo script de deploy).
+// Só existem dois comandos: configurar e consultar o autor pelo código.
+// Enviar confissão e ver as próprias confissões é feito pelos botões do painel.
 module.exports = [
   new SlashCommandBuilder()
     .setName('configurar-confissoes')
@@ -40,19 +42,6 @@ module.exports = [
         .setDescription('Opcional: canal privado com o registro de decisões e consultas de autor')
         .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
     ),
-  new SlashCommandBuilder()
-    .setName('setup-confissao')
-    .setDescription('Envia o painel de confissões para este canal')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .setDMPermission(false),
-  new SlashCommandBuilder()
-    .setName('confissao')
-    .setDescription('Envia uma confissão anônima para a gestão analisar')
-    .setDMPermission(false),
-  new SlashCommandBuilder()
-    .setName('minhas-confissoes')
-    .setDescription('Mostra o código e o status das suas últimas confissões (só você vê)')
-    .setDMPermission(false),
   new SlashCommandBuilder()
     .setName('autor-confissao')
     .setDescription('Mostra quem enviou uma confissão pelo código (Gestão ou acima)')

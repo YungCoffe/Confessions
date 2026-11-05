@@ -17,7 +17,15 @@ const { iniciarServidor } = require('./servidor');
 const commands = require('./commands');
 const db = require('./db');
 const { podeAprovar } = require('./permissoes');
-const { painelConfissoes, modalConfissao, EMOJI_STATUS } = require('./ui');
+const {
+  modalConfissao,
+  EMOJI_STATUS,
+  ID_BOTAO_ENVIAR,
+  ID_BOTAO_MINHAS,
+  ID_MODAL,
+  ID_CAMPO_TEXTO,
+  ID_CAMPO_MENSAGEM
+} = require('./ui');
 const { configurarCanais, resolverCanal } = require('./configurar');
 
 if (!process.env.DISCORD_TOKEN) {
@@ -192,7 +200,7 @@ function mensagemDeErro(error, interaction) {
 }
 
 // ---------------------------------------------------------------------------
-// Interações (apenas slash + botões/modal — nenhum comando de texto)
+// Interações: 2 slash commands (/configurar-confissoes e /autor-confissao) + botões/modal do painel
 // ---------------------------------------------------------------------------
 const AVISO_BOT_FORA_DO_SERVIDOR =
   'O bot não está como **membro** deste servidor, então não consegue funcionar aqui. ' +
@@ -218,7 +226,7 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   try {
-    // 1. /configurar-confissoes — cria canais e define quem vê cada um
+    // 1. /configurar-confissoes — escolhe canais e cargo Gestão, deixa a análise privada e posta o painel
     if (interaction.isChatInputCommand() && interaction.commandName === 'configurar-confissoes') {
       if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
         return await interaction.reply({
@@ -229,41 +237,13 @@ client.on(Events.InteractionCreate, async interaction => {
       return await configurarCanais(interaction);
     }
 
-    // 2. /setup-confissao — envia o painel no canal atual
-    if (interaction.isChatInputCommand() && interaction.commandName === 'setup-confissao') {
-      if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
-        return await interaction.reply({
-          content: 'Você precisa ser Administrador para usar este comando.',
-          flags: EPHEMERAL
-        });
-      }
-
-      await interaction.deferReply({ flags: EPHEMERAL });
-      try {
-        await interaction.channel.send(painelConfissoes());
-      } catch (erro) {
-        console.error('[ERRO] Não consegui enviar o painel:', erro);
-        return await interaction.editReply({
-          content:
-            'Não consegui enviar o painel neste canal. O bot precisa de **Ver Canal, Enviar Mensagens e Inserir Links** aqui.\n' +
-            `-# Detalhe: ${String((erro && erro.message) || erro).slice(0, 150)}`
-        });
-      }
-      return await interaction.editReply({ content: 'Painel de confissões criado com sucesso!' });
-    }
-
-    // 3. /confissao — abre o modal direto pelo slash
-    if (interaction.isChatInputCommand() && interaction.commandName === 'confissao') {
-      return await interaction.showModal(modalConfissao());
-    }
-
-    // 4. /minhas-confissoes — o autor acompanha seus códigos e status
-    if (interaction.isChatInputCommand() && interaction.commandName === 'minhas-confissoes') {
+    // 2. Botão "Minhas Confissões" do painel — o autor acompanha seus códigos e status (só ele vê)
+    if (interaction.isButton() && interaction.customId === ID_BOTAO_MINHAS) {
       const registros = db.listarDoUsuario(interaction.user.id, 10);
 
       if (!registros.length) {
         return await interaction.reply({
-          content: 'Você ainda não enviou nenhuma confissão. Use `/confissao`.',
+          content: 'Você ainda não enviou nenhuma confissão. Clique em **Enviar Confissão** no painel.',
           flags: EPHEMERAL
         });
       }
@@ -286,7 +266,7 @@ client.on(Events.InteractionCreate, async interaction => {
       return await interaction.reply({ embeds: [embed], flags: EPHEMERAL });
     }
 
-    // 5. /autor-confissao — Gestão+ descobre o autor pelo código de rastreio
+    // 3. /autor-confissao — Gestão+ descobre o autor pelo código de rastreio
     if (interaction.isChatInputCommand() && interaction.commandName === 'autor-confissao') {
       if (!podeAprovar(interaction)) {
         return await interaction.reply({
@@ -341,18 +321,26 @@ client.on(Events.InteractionCreate, async interaction => {
       );
     }
 
-    // 6. Botão do painel — abre o modal
-    if (interaction.isButton() && interaction.customId === 'abrir_modal_confissao') {
+    // 4. Botão "Enviar Confissão" do painel — abre o formulário
+    if (interaction.isButton() && interaction.customId === ID_BOTAO_ENVIAR) {
       return await interaction.showModal(modalConfissao());
     }
 
-    // 7. Modal enviado — cria o registro e encaminha para o canal de análise
-    if (interaction.isModalSubmit() && interaction.customId === 'modal_confissao') {
+    // 5. Formulário enviado — cria o registro e encaminha para o canal de análise
+    if (interaction.isModalSubmit() && interaction.customId === ID_MODAL) {
       await interaction.deferReply({ flags: EPHEMERAL });
 
-      const texto = interaction.fields.getTextInputValue('texto_confissao').trim();
+      const texto = interaction.fields.getTextInputValue(ID_CAMPO_TEXTO).trim();
       if (!texto) {
         return await interaction.editReply({ content: 'A confissão não pode ficar vazia.' });
+      }
+
+      // Mensagem opcional enviada junto da confissão (campo pode nem vir no formulário antigo)
+      let mensagem = null;
+      try {
+        mensagem = interaction.fields.getTextInputValue(ID_CAMPO_MENSAGEM).trim() || null;
+      } catch (_) {
+        mensagem = null;
       }
 
       const userId = interaction.user.id;
@@ -373,7 +361,8 @@ client.on(Events.InteractionCreate, async interaction => {
         userId,
         autorTag: interaction.user.tag,
         guildId: interaction.guild.id,
-        texto
+        texto,
+        mensagem
       });
 
       // A descrição comporta 4096 caracteres (o campo "value" de embed só aguenta 1024).
@@ -392,6 +381,10 @@ client.on(Events.InteractionCreate, async interaction => {
           }
         )
         .setFooter({ text: 'Autor oculto — use /autor-confissao com o código para identificar' });
+
+      if (registro.mensagem) {
+        embedAnalise.addFields({ name: '💬 Mensagem junto da confissão', value: registro.mensagem });
+      }
 
       const rowAprovacao = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -424,11 +417,11 @@ client.on(Events.InteractionCreate, async interaction => {
         content:
           `Sua confissão foi enviada para análise. Guarde o código ${citarCodigo(registro.codigo)}.\n` +
           'Você será avisado no PV quando a Gestão decidir (deixe suas mensagens diretas abertas) ' +
-          'ou acompanhe com `/minhas-confissoes`.'
+          'ou acompanhe pelo botão **Minhas Confissões** do painel.'
       });
     }
 
-    // 8. Botões de aprovar/recusar — Gestão e cargos acima
+    // 6. Botões de aprovar/recusar — Gestão e cargos acima
     if (
       interaction.isButton() &&
       (interaction.customId.startsWith('aprovar_') || interaction.customId.startsWith('recusar_'))
@@ -490,6 +483,10 @@ client.on(Events.InteractionCreate, async interaction => {
             .setColor('#57F287')
             .setTimestamp()
             .setFooter({ text: `Código ${registro.codigo}` });
+
+          if (registro.mensagem) {
+            embedPublico.addFields({ name: '💬 Mensagem', value: registro.mensagem });
+          }
 
           // Se o envio falhar, a confissão continua pendente (dá para tentar de novo)
           try {
