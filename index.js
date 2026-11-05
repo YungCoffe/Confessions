@@ -24,7 +24,9 @@ const {
   ID_BOTAO_MINHAS,
   ID_MODAL,
   ID_CAMPO_TEXTO,
-  ID_CAMPO_MENSAGEM
+  ID_CAMPO_FOTO,
+  IDS_CAMPO_FIGURINHA,
+  MAX_FIGURINHAS
 } = require('./ui');
 const { configurarCanais, resolverCanal } = require('./configurar');
 
@@ -119,6 +121,106 @@ function citarCodigo(codigo) {
   return `\`${codigo}\``;
 }
 
+// ---------------------------------------------------------------------------
+// Foto e figurinha (opcionais, enviadas junto da confissão)
+// ---------------------------------------------------------------------------
+const FOTO_MAX_BYTES = (Number.parseFloat(process.env.FOTO_MAX_MB ?? '8') || 8) * 1024 * 1024;
+const TETO_DOWNLOAD_BYTES = Math.max(FOTO_MAX_BYTES, 25 * 1024 * 1024); // ao reaproveitar a foto da análise
+const TIPOS_FOTO = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+const CACHE_FIGURINHAS_MS = 5 * 60 * 1000;
+const cacheFigurinhas = new Map(); // guildId -> { em, lista }
+
+function lerSeguro(fn, padrao = null) {
+  try {
+    const valor = fn();
+    return valor === undefined ? padrao : valor;
+  } catch (_) {
+    return padrao;
+  }
+}
+
+// Figurinhas do servidor para o menu do formulário. O Discord só dá 3 s para abrir o formulário:
+// por isso há cache de 5 min e um limite de 1,5 s (se a busca demorar, abre sem o menu desta vez).
+async function figurinhasDoServidor(guild) {
+  const guardado = cacheFigurinhas.get(guild.id);
+  if (guardado && Date.now() - guardado.em < CACHE_FIGURINHAS_MS) return guardado.lista;
+
+  const busca = guild.stickers.fetch().then(colecao => {
+    const lista = [...colecao.values()]
+      .filter(figurinha => figurinha.available !== false)
+      .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
+      .slice(0, MAX_FIGURINHAS)
+      .map(figurinha => ({ id: figurinha.id, name: figurinha.name, description: figurinha.description || '' }));
+    cacheFigurinhas.set(guild.id, { em: Date.now(), lista });
+    return lista;
+  });
+
+  let temporizador;
+  const limite = new Promise(resolve => {
+    temporizador = setTimeout(() => resolve(null), 1500);
+  });
+  try {
+    const lista = await Promise.race([busca, limite]);
+    return lista || (guardado ? guardado.lista : []);
+  } catch (erro) {
+    console.warn('[FIGURINHAS] Não consegui listar as figurinhas do servidor:', erro.message);
+    return guardado ? guardado.lista : [];
+  } finally {
+    clearTimeout(temporizador);
+  }
+}
+
+// Lê a foto escolhida no formulário e confere tipo e tamanho (o Discord não valida isso antes).
+// Devolve { anexo: null } sem foto, { anexo, extensao } com foto válida ou { erro } para avisar a pessoa.
+function lerFoto(interaction) {
+  const arquivos = lerSeguro(() => interaction.fields.getUploadedFiles(ID_CAMPO_FOTO));
+  let anexo = null;
+  if (arquivos && typeof arquivos.first === 'function') anexo = arquivos.first() || null;
+  else if (Array.isArray(arquivos)) anexo = arquivos[0] || null;
+  if (!anexo) return { anexo: null };
+
+  const tipo = String(anexo.contentType || '').split(';')[0].trim().toLowerCase();
+  const extensao = TIPOS_FOTO[tipo];
+  if (!extensao) {
+    return { erro: 'A foto precisa ser uma imagem **PNG, JPG, GIF ou WEBP**. Tente de novo com outro arquivo.' };
+  }
+  if (anexo.size > FOTO_MAX_BYTES) {
+    const maximo = Number((FOTO_MAX_BYTES / 1048576).toFixed(1));
+    return { erro: `A foto é grande demais (máximo de **${maximo} MB**). Tente com uma menor.` };
+  }
+  return { anexo, extensao };
+}
+
+// Figurinha escolhida num dos menus (o Discord só deixa escolher entre as opções que o bot ofereceu)
+function lerFigurinhaEscolhida(interaction) {
+  for (const id of IDS_CAMPO_FIGURINHA) {
+    const valores = lerSeguro(() => interaction.fields.getStringSelectValues(id), []);
+    if (valores && valores.length) return valores[0];
+  }
+  return null;
+}
+
+async function baixarImagem(url, limiteBytes) {
+  const resposta = await fetch(url, { signal: AbortSignal.timeout(20000) });
+  if (!resposta.ok) throw new Error(`download da imagem falhou (HTTP ${resposta.status})`);
+  const buffer = Buffer.from(await resposta.arrayBuffer());
+  if (buffer.length > limiteBytes) throw new Error('a imagem passou do tamanho máximo');
+  return buffer;
+}
+
+// Se o envio com a figurinha falhar (ex.: ela foi apagada do servidor), tenta de novo sem ela:
+// a confissão não pode ficar travada por causa de um enfeite.
+async function enviarComFallback(canal, payload) {
+  try {
+    return { mensagem: await canal.send(payload), semFigurinha: false };
+  } catch (erro) {
+    if (!payload.stickers || !payload.stickers.length) throw erro;
+    console.warn('[FIGURINHA] Envio com figurinha falhou, tentando sem ela:', erro.message);
+    const { stickers, ...semFigurinha } = payload;
+    return { mensagem: await canal.send(semFigurinha), semFigurinha: true };
+  }
+}
+
 function checarLimites(userId) {
   const agora = Date.now();
 
@@ -140,7 +242,7 @@ function checarLimites(userId) {
   return null;
 }
 
-// Registro de decisões e consultas de autor (canal privado da Gestão+). Nunca derruba o fluxo.
+// Registro de decisões e consultas de autor (canal de logs escolhido por você). Nunca derruba o fluxo.
 async function registrarLog(guild, conteudo) {
   try {
     const canal = resolverCanal(guild, 'logs');
@@ -226,7 +328,7 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   try {
-    // 1. /configurar-confissoes — escolhe canais e cargo Gestão, deixa a análise privada e posta o painel
+    // 1. /configurar-confissoes — guarda os canais e o cargo Gestão e posta o painel (NÃO altera permissões de canais)
     if (interaction.isChatInputCommand() && interaction.commandName === 'configurar-confissoes') {
       if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
         return await interaction.reply({
@@ -323,7 +425,8 @@ client.on(Events.InteractionCreate, async interaction => {
 
     // 4. Botão "Enviar Confissão" do painel — abre o formulário
     if (interaction.isButton() && interaction.customId === ID_BOTAO_ENVIAR) {
-      return await interaction.showModal(modalConfissao());
+      const figurinhas = await figurinhasDoServidor(interaction.guild);
+      return await interaction.showModal(modalConfissao(figurinhas));
     }
 
     // 5. Formulário enviado — cria o registro e encaminha para o canal de análise
@@ -333,14 +436,6 @@ client.on(Events.InteractionCreate, async interaction => {
       const texto = interaction.fields.getTextInputValue(ID_CAMPO_TEXTO).trim();
       if (!texto) {
         return await interaction.editReply({ content: 'A confissão não pode ficar vazia.' });
-      }
-
-      // Mensagem opcional enviada junto da confissão (campo pode nem vir no formulário antigo)
-      let mensagem = null;
-      try {
-        mensagem = interaction.fields.getTextInputValue(ID_CAMPO_MENSAGEM).trim() || null;
-      } catch (_) {
-        mensagem = null;
       }
 
       const userId = interaction.user.id;
@@ -354,15 +449,37 @@ client.on(Events.InteractionCreate, async interaction => {
         return await interaction.editReply({ content: AVISO_SEM_CANAL });
       }
 
+      // Foto opcional: confere tipo e tamanho ANTES de gastar o cooldown da pessoa
+      const foto = lerFoto(interaction);
+      if (foto.erro) {
+        return await interaction.editReply({ content: foto.erro });
+      }
+      const figurinhaEscolhida = lerFigurinhaEscolhida(interaction);
+
       // Reserva o cooldown AGORA (antes de qualquer await): dois envios simultâneos não passam juntos
       ultimoEnvio.set(userId, Date.now());
+
+      // Baixa a foto (o Discord não entrega o arquivo no formulário). Falhou? Libera o cooldown.
+      let bufferFoto = null;
+      if (foto.anexo) {
+        try {
+          bufferFoto = await baixarImagem(foto.anexo.url, FOTO_MAX_BYTES);
+        } catch (erro) {
+          console.error('[ERRO] Não consegui baixar a foto da confissão:', erro.message);
+          ultimoEnvio.delete(userId);
+          return await interaction.editReply({
+            content: 'Não consegui receber a sua foto. Tente de novo ou envie a confissão sem a foto.'
+          });
+        }
+      }
 
       const registro = db.criarConfissao({
         userId,
         autorTag: interaction.user.tag,
         guildId: interaction.guild.id,
         texto,
-        mensagem
+        temFoto: Boolean(bufferFoto),
+        figurinhaId: figurinhaEscolhida
       });
 
       // A descrição comporta 4096 caracteres (o campo "value" de embed só aguenta 1024).
@@ -382,10 +499,6 @@ client.on(Events.InteractionCreate, async interaction => {
         )
         .setFooter({ text: 'Autor oculto — use /autor-confissao com o código para identificar' });
 
-      if (registro.mensagem) {
-        embedAnalise.addFields({ name: '💬 Mensagem junto da confissão', value: registro.mensagem });
-      }
-
       const rowAprovacao = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`aprovar_${registro.codigo}`)
@@ -397,12 +510,22 @@ client.on(Events.InteractionCreate, async interaction => {
           .setStyle(ButtonStyle.Danger)
       );
 
+      const payloadAnalise = {
+        embeds: [embedAnalise],
+        components: [rowAprovacao],
+        allowedMentions: MENTIONS_NULAS
+      };
+      if (bufferFoto) {
+        // Nome neutro: o nome original do arquivo poderia entregar quem enviou
+        const nomeFoto = `foto-${registro.codigo}.${foto.extensao}`;
+        embedAnalise.setImage(`attachment://${nomeFoto}`);
+        payloadAnalise.files = [{ attachment: bufferFoto, name: nomeFoto }];
+      }
+      if (figurinhaEscolhida) payloadAnalise.stickers = [figurinhaEscolhida];
+
+      let semFigurinha = false;
       try {
-        await canalAnalise.send({
-          embeds: [embedAnalise],
-          components: [rowAprovacao],
-          allowedMentions: MENTIONS_NULAS
-        });
+        ({ semFigurinha } = await enviarComFallback(canalAnalise, payloadAnalise));
       } catch (erro) {
         console.error('[ERRO] Falha ao enviar para o canal de análise:', erro);
         // Desfaz: sem mensagem no canal não existe confissão (nada de pendente fantasma contando no limite)
@@ -412,10 +535,12 @@ client.on(Events.InteractionCreate, async interaction => {
           content: 'Erro ao enviar sua confissão para análise. Tente novamente mais tarde.'
         });
       }
+      if (semFigurinha) db.atualizar(registro.codigo, { figurinhaId: null });
 
       return await interaction.editReply({
         content:
           `Sua confissão foi enviada para análise. Guarde o código ${citarCodigo(registro.codigo)}.\n` +
+          (semFigurinha ? 'A figurinha escolhida não está disponível, então ela foi enviada sem a figurinha.\n' : '') +
           'Você será avisado no PV quando a Gestão decidir (deixe suas mensagens diretas abertas) ' +
           'ou acompanhe pelo botão **Minhas Confissões** do painel.'
       });
@@ -477,6 +602,28 @@ client.on(Events.InteractionCreate, async interaction => {
             return await interaction.followUp({ content: AVISO_SEM_CANAL, flags: EPHEMERAL });
           }
 
+          // Foto: pega de novo a que está na mensagem de análise (os links do Discord expiram)
+          let arquivoFoto = null;
+          if (registro.temFoto) {
+            const anexo = interaction.message.attachments && interaction.message.attachments.first();
+            try {
+              if (!anexo) throw new Error('a foto não está mais na mensagem de análise');
+              arquivoFoto = {
+                attachment: await baixarImagem(anexo.url, TETO_DOWNLOAD_BYTES),
+                name: anexo.name || `foto-${registro.codigo}.png`
+              };
+            } catch (erro) {
+              console.error(`[ERRO] Não consegui carregar a foto da confissão ${codigo}:`, erro.message);
+              return await interaction.followUp({
+                content:
+                  'Não consegui carregar a foto desta confissão, então ela **continua pendente**. ' +
+                  'Tente aprovar de novo; se não funcionar, recuse.\n' +
+                  `-# Detalhe: ${String((erro && erro.message) || erro).slice(0, 150)}`,
+                flags: EPHEMERAL
+              });
+            }
+          }
+
           const embedPublico = new EmbedBuilder()
             .setTitle('🗣️ Confissão Anônima')
             .setDescription(registro.texto)
@@ -484,16 +631,16 @@ client.on(Events.InteractionCreate, async interaction => {
             .setTimestamp()
             .setFooter({ text: `Código ${registro.codigo}` });
 
-          if (registro.mensagem) {
-            embedPublico.addFields({ name: '💬 Mensagem', value: registro.mensagem });
+          const payloadPublico = { embeds: [embedPublico], allowedMentions: MENTIONS_NULAS };
+          if (arquivoFoto) {
+            embedPublico.setImage(`attachment://${arquivoFoto.name}`);
+            payloadPublico.files = [arquivoFoto];
           }
+          if (registro.figurinhaId) payloadPublico.stickers = [registro.figurinhaId];
 
           // Se o envio falhar, a confissão continua pendente (dá para tentar de novo)
           try {
-            mensagemPublica = await canalPublico.send({
-              embeds: [embedPublico],
-              allowedMentions: MENTIONS_NULAS
-            });
+            ({ mensagem: mensagemPublica } = await enviarComFallback(canalPublico, payloadPublico));
           } catch (erro) {
             console.error(`[ERRO] Não consegui publicar a confissão ${codigo} em #${canalPublico.name}:`, erro);
             return await interaction.followUp({

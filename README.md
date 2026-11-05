@@ -8,13 +8,16 @@ por botões no painel, cache no mínimo, banco rápido e aprovação pela Gestã
 
 1. Um Administrador roda `/configurar-confissoes` e **escolhe**: o canal do painel, o canal de
    análise, o canal das confissões aprovadas e o **cargo Gestão**. O bot não cria nem adivinha nada.
-2. O bot posta o painel e deixa a análise visível **só para a Gestão e todos os cargos acima dela**.
+2. O bot posta o painel e guarda a escolha. **Ele não altera permissões nem configurações de nenhum
+   canal**: quem vê e quem escreve em cada canal é decisão sua.
 3. Qualquer membro clica em **Enviar Confissão** no painel e escreve o texto. Se quiser, pode
-   preencher também o campo **Mensagem junto da confissão (opcional)** — um recado que vai junto.
-4. O bot gera um **código de rastreio** (ex.: `4K7P2M`) e manda para o canal de análise apenas
-   o texto, a mensagem (se houver) e o código — **o autor não aparece no Discord**.
+   mandar também uma **foto** (PNG, JPG, GIF ou WEBP) e/ou escolher uma **figurinha do servidor**.
+   As duas coisas são opcionais.
+4. O bot gera um **código de rastreio** (ex.: `4K7P2M`) e manda para o canal de análise o texto, a
+   foto e a figurinha (se houver) e o código — **o autor não aparece no Discord** (a foto é reenviada
+   pelo bot com nome neutro, não com o nome do arquivo original).
 5. Quem é **Gestão ou acima** (ou Administrador) clica em **Aprovar** ou **Recusar**. Ao aprovar,
-   a confissão é publicada junto da mensagem opcional (quando a pessoa escreveu uma).
+   a confissão é publicada junto da foto e da figurinha (quando a pessoa mandou).
 6. O autor recebe **aviso no PV**:
    - aprovada: `✅ Sua confissão foi aprovada em #canal!` (com link da publicação);
    - recusada: `❌ Sua confissão foi recusada pela Gestão.`
@@ -29,13 +32,15 @@ por botões no painel, cache no mínimo, banco rápido e aprovação pela Gestã
 1. **Convide o bot** com este link (troque `SEU_CLIENT_ID`):
 
    ```
-   https://discord.com/oauth2/authorize?client_id=SEU_CLIENT_ID&scope=bot%20applications.commands&permissions=268520448
+   https://discord.com/oauth2/authorize?client_id=SEU_CLIENT_ID&scope=bot%20applications.commands&permissions=117760
    ```
 
-   Permissões: Ver Canais, Enviar Mensagens, Inserir Links, Ver Histórico de Mensagens e
-   **Gerenciar Cargos** (usado só para deixar a análise privada).
-2. O bot precisa conseguir **ver e escrever** nos canais do painel e das aprovadas. Nos canais de
-   análise e logs ele recebe o acesso sozinho.
+   Permissões: Ver Canais, Enviar Mensagens, Inserir Links, Anexar Arquivos (foto da confissão) e
+   Ver Histórico de Mensagens. O bot **não pede** Gerenciar Cargos nem Gerenciar Canais.
+2. **Você** libera o bot em cada canal escolhido (o bot não faz isso sozinho). Ele precisa de:
+   Ver Canais, Enviar Mensagens e Inserir Links nos 4 canais; Anexar Arquivos na análise e nas
+   aprovadas; Ver Histórico no painel (para editar o painel em vez de duplicar). O comando confere
+   isso e, se faltar algo, diz exatamente o quê e em qual canal.
 3. Rode **`/configurar-confissoes`** e preencha:
 
    | Opção | Obrigatória | O que é |
@@ -43,41 +48,59 @@ por botões no painel, cache no mínimo, banco rápido e aprovação pela Gestã
    | `canal-painel` | Sim | Onde o painel com o botão será postado |
    | `canal-analise` | Sim | Onde as confissões chegam para Aprovar/Recusar |
    | `canal-aprovadas` | Sim | Onde as aprovadas são publicadas |
-   | `cargo-gestao` | Sim | Cargo Gestão: ele e todos acima veem a análise e decidem |
-   | `canal-logs` | Não | Registro privado de decisões e consultas de autor |
+   | `cargo-gestao` | Sim | Cargo Gestão: ele e todos acima aprovam, recusam e consultam o autor |
+   | `canal-logs` | Não | Registro de decisões e consultas de autor |
 
-4. O resumo mostra tudo o que foi configurado e os cargos que têm acesso.
+4. O resumo mostra o que foi salvo e, em **Atenção**, avisos de leitura (sem alterar nada): canal de
+   análise ou logs visível para `@everyone`, ou cargo Gestão que ainda não enxerga a análise.
 
 ## Quem vê o quê
 
-- **Análise e logs** (`canal-analise`, `canal-logs`): só **Gestão e acima**. O bot aplica isso
-  sozinho e **substitui as permissões desses canais** (é o que garante que ninguém mais veja).
-- **Painel e aprovadas** (`canal-painel`, `canal-aprovadas`): o bot **não mexe** nas permissões.
-  Você decide quem vê e quem escreve (o normal é todos verem e ninguém escrever, só o bot).
-- **Gestão e acima** = o cargo escolhido e todos os cargos acima dele na hierarquia. Vale para ver
-  a análise e para aprovar/recusar/consultar autor. Cargos de bots/integrações ficam de fora.
-  Administradores veem tudo, como sempre.
-- Criou um cargo novo acima da Gestão? Rode `/configurar-confissoes` de novo para ele ver a análise.
-- Rodar de novo não duplica nada: reaplica as permissões e atualiza o painel existente. Sem
+O bot **não mexe nas permissões de nenhum canal**. Sugestão de como deixar (você decide):
+
+- **Análise e logs** (`canal-analise`, `canal-logs`): visíveis só para **Gestão e acima**. A análise
+  tem as confissões (e fotos) **antes** da aprovação, então não deixe `@everyone` ver.
+- **Painel e aprovadas** (`canal-painel`, `canal-aprovadas`): todos veem, só o bot escreve.
+- **Quem pode aprovar/recusar/consultar autor** = o cargo `cargo-gestao` e todos os cargos acima
+  dele na hierarquia (mais Administradores). Isso é conferido pelo bot a cada clique, não depende de
+  permissão de canal: cargo novo acima da Gestão já vale sem rodar o comando de novo. Para
+  *enxergar* o canal de análise, o cargo precisa de acesso a ele, e isso é com você.
+- Rodar `/configurar-confissoes` de novo não duplica nada: atualiza o painel existente. Sem
   `canal-logs`, mantém o canal de logs anterior.
 
 ## Comandos
 
 | Comando | Quem usa | Para que serve |
 | --- | --- | --- |
-| `/configurar-confissoes` | Administrador | Escolhe canais e cargo Gestão, deixa a análise privada, posta (ou atualiza) o painel |
+| `/configurar-confissoes` | Administrador | Guarda canais e cargo Gestão e posta (ou atualiza) o painel. Não altera permissões de canais |
 | `/autor-confissao` | Gestão ou acima | Identifica o autor de um código (fica registrado) |
 
 Os outros recursos ficam no **painel**, por botões (sem comando):
 
 | Botão | Quem usa | Para que serve |
 | --- | --- | --- |
-| 📝 Enviar Confissão | Todos | Abre o formulário (confissão + mensagem opcional) |
+| 📝 Enviar Confissão | Todos | Abre o formulário (confissão + foto e figurinha opcionais) |
 | 📨 Minhas Confissões | Todos | Mostra códigos e status (só você vê) |
 | Aprovar / Recusar | Gestão ou acima | Decidem na mensagem de análise |
 
 Para reenviar ou atualizar o painel, rode `/configurar-confissoes` de novo: ele edita o painel
 existente (e é assim que o painel antigo ganha o botão **Minhas Confissões**).
+
+## Foto e figurinha (opcionais)
+
+- **Foto**: aceita PNG, JPG, GIF e WEBP até `FOTO_MAX_MB` (8 MB por padrão). Outro tipo ou tamanho
+  maior é recusado na hora, com aviso, sem gastar o cooldown da pessoa. O Discord só permite
+  validar isso depois do envio, por isso a checagem é feita pelo bot.
+- **Figurinha**: a pessoa escolhe num menu com as figurinhas **do próprio servidor** (até 50: o
+  Discord limita cada menu a 25 opções, então o formulário usa 2 menus quando passa disso). Servidor
+  sem figurinhas: o menu simplesmente não aparece. A lista é guardada por 5 minutos.
+- A foto e a figurinha passam pela análise da Gestão como o resto da confissão, e só vão para o
+  canal de aprovadas se forem aprovadas.
+- Se a figurinha tiver sido apagada do servidor, a confissão segue sem ela (não trava).
+- Se a foto sumir da mensagem de análise antes da aprovação, a confissão continua pendente e a
+  Gestão é avisada (dá para tentar de novo ou recusar).
+- O formulário usa o componente de envio de arquivo do Discord, que exige **discord.js 14.24 ou
+  mais novo** (o `package.json` já pede isso).
 
 ## Configuração (.env)
 
@@ -93,6 +116,7 @@ cargo são escolhidos no Discord com `/configurar-confissoes`.
 | `ANALISE_CHANNEL_ID` / `PUBLIC_CHANNEL_ID` / `LOGS_CHANNEL_ID` | — | Reserva dos canais |
 | `GESTAO_ROLE` | `gestão` | Último recurso: procura o cargo por este nome |
 | `AUTO_DEPLOY` | `true` | `false` desativa o registro automático dos comandos |
+| `FOTO_MAX_MB` | `8` | Tamanho máximo da foto opcional, em MB |
 | `COOLDOWN_CONFISSAO` | `120` | Segundos entre duas confissões do mesmo usuário |
 | `LIMITE_DIARIO` | `10` | Máximo de confissões por usuário em 24h |
 | `DATA_DIR` | `./data` | Pasta do banco |
@@ -127,6 +151,7 @@ Quando algo falha, o bot responde com o motivo (Gestão+ vê também o detalhe t
 | "O bot não tem permissão para fazer isso neste canal" | Confira as permissões do bot no canal em questão |
 | "O bot não está como membro deste servidor" | Convide o bot de novo pelo link do README (precisa do escopo **bot**, não só `applications.commands`) e confira o `GUILD_ID` |
 | "O sistema ainda não foi configurado" | Um administrador precisa rodar `/configurar-confissoes` |
+| "Não consegui carregar a foto desta confissão" | A foto saiu da mensagem de análise; tente aprovar de novo ou recuse |
 | "Confissão ... não encontrada no banco" | O banco foi apagado (host sem disco): use `DATA_DIR` com disco persistente |
 
 ## Rodar localmente
@@ -187,9 +212,9 @@ para não gerar alarme falso no restart.
 ## Arquivos
 
 - `index.js` — bot: interações, análise, aprovação/recusa, logs, cliente enxuto.
-- `configurar.js` — `/configurar-confissoes`: valida a escolha, deixa a análise privada para Gestão+, posta o painel.
-- `permissoes.js` — regra "Gestão ou acima" e lista de cargos com acesso.
-- `ui.js` — painel (botões) e formulário (confissão + mensagem opcional).
+- `configurar.js` — `/configurar-confissoes`: valida a escolha, confere o acesso do bot (sem alterar canais) e posta o painel.
+- `permissoes.js` — regra "Gestão ou acima" (quem pode aprovar, recusar e consultar autor).
+- `ui.js` — painel (botões) e formulário (confissão + foto opcional + figurinha opcional).
 - `db.js` — banco append-only com códigos de rastreio e configuração por servidor.
 - `servidor.js` — HTTP: `/ping`, `/health` e página de status.
 - `commands.js` — definição dos slash commands (fonte única).

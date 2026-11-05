@@ -19,7 +19,7 @@ module.exports = [
     .addChannelOption(option =>
       option
         .setName('canal-analise')
-        .setDescription('Canal onde as confissões chegam para Aprovar/Recusar (ficará privado)')
+        .setDescription('Canal onde as confissões chegam para Aprovar/Recusar')
         .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
         .setRequired(true)
     )
@@ -33,13 +33,13 @@ module.exports = [
     .addRoleOption(option =>
       option
         .setName('cargo-gestao')
-        .setDescription('Cargo Gestão: ele e todos acima veem a análise e aprovam/recusam')
+        .setDescription('Cargo Gestão: ele e todos acima aprovam/recusam e consultam o autor')
         .setRequired(true)
     )
     .addChannelOption(option =>
       option
         .setName('canal-logs')
-        .setDescription('Opcional: canal privado com o registro de decisões e consultas de autor')
+        .setDescription('Opcional: canal com o registro de decisões e consultas de autor')
         .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
     ),
   new SlashCommandBuilder()

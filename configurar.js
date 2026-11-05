@@ -1,13 +1,11 @@
 const {
   ChannelType,
-  OverwriteType,
   PermissionFlagsBits: P,
   PermissionsBitField,
   EmbedBuilder,
   MessageFlags
 } = require('discord.js');
 const db = require('./db');
-const { cargosGestaoMais } = require('./permissoes');
 const { painelConfissoes } = require('./ui');
 
 const EPHEMERAL = MessageFlags.Ephemeral;
@@ -21,18 +19,21 @@ const CANAIS = {
   logs: { cfg: 'canalLogsId', env: 'LOGS_CHANNEL_ID' }
 };
 
-const LER = [P.ViewChannel, P.ReadMessageHistory];
-const PERMISSOES_DO_BOT = [P.ViewChannel, P.SendMessages, P.EmbedLinks, P.ReadMessageHistory];
-const PERMISSOES_NOS_CANAIS_ABERTOS = [P.ViewChannel, P.SendMessages, P.EmbedLinks];
-
-// Limite do Discord: 100 sobrescritas por canal (reserva espaço para @everyone e para o bot)
-const MAX_CARGOS_STAFF = 85;
+// O bot NÃO altera permissões nem configurações de canal nenhum: quem vê e quem escreve em cada canal
+// é decisão sua. O comando só confere se o bot consegue fazer o que precisa em cada canal.
+const BASE = [P.ViewChannel, P.SendMessages, P.EmbedLinks];
+const PERMISSOES_POR_CANAL = {
+  painel: { nome: 'painel', precisa: [...BASE, P.ReadMessageHistory] }, // histórico: para editar o painel já postado
+  analise: { nome: 'análise', precisa: [...BASE, P.AttachFiles] }, // anexar: foto da confissão
+  publico: { nome: 'aprovadas', precisa: [...BASE, P.AttachFiles] },
+  logs: { nome: 'logs', precisa: [P.ViewChannel, P.SendMessages] }
+};
 
 const NOMES_PT = {
-  ManageRoles: 'Gerenciar Cargos',
   ViewChannel: 'Ver Canais',
   SendMessages: 'Enviar Mensagens',
   EmbedLinks: 'Inserir Links',
+  AttachFiles: 'Anexar Arquivos',
   ReadMessageHistory: 'Ver Histórico de Mensagens'
 };
 
@@ -56,15 +57,6 @@ function resolverCanal(guild, chave) {
   return null;
 }
 
-// Canais privados (análise e logs): só Gestão e acima enxergam; o bot mantém acesso para postar
-function sobrescritasPrivadas({ guild, botId, staff }) {
-  return [
-    { id: guild.id, type: OverwriteType.Role, allow: [], deny: [P.ViewChannel] },
-    ...staff.map(cargo => ({ id: cargo.id, type: OverwriteType.Role, allow: LER, deny: [] })),
-    { id: botId, type: OverwriteType.Member, allow: PERMISSOES_DO_BOT, deny: [] }
-  ];
-}
-
 // Reedita o painel existente em vez de empilhar painéis repetidos a cada execução
 async function publicarPainel(canal, configAnterior) {
   if (configAnterior.painelMensagemId && configAnterior.canalPainelId === canal.id) {
@@ -78,26 +70,12 @@ async function publicarPainel(canal, configAnterior) {
   return canal.send(painelConfissoes());
 }
 
-function listarCargos(cargos, limite = 700) {
-  let texto = '';
-  let exibidos = 0;
-  for (const cargo of cargos) {
-    const parte = `<@&${cargo.id}> `;
-    if ((texto + parte).length > limite) break;
-    texto += parte;
-    exibidos += 1;
-  }
-  const resto = cargos.length - exibidos;
-  return (texto.trim() || '—') + (resto > 0 ? ` …e mais ${resto}` : '');
-}
-
 async function configurarCanais(interaction) {
   const { guild, options } = interaction;
   await interaction.deferReply({ flags: EPHEMERAL });
   const responder = content => interaction.editReply({ content });
 
   try {
-    const motivo = `Configuração das confissões por ${interaction.user.tag}`;
     const configAnterior = db.obterConfig(guild.id);
 
     // 1. Cargo Gestão --------------------------------------------------------
@@ -105,7 +83,7 @@ async function configurarCanais(interaction) {
     const gestao = guild.roles.cache.get(escolhido.id);
     if (!gestao) return await responder('Não consegui ler esse cargo. Tente de novo.');
     if (gestao.id === guild.id) {
-      return await responder('O cargo @everyone não pode ser a Gestão: todos os membros veriam a análise.');
+      return await responder('O cargo @everyone não pode ser a Gestão: todos os membros poderiam aprovar e ver autores.');
     }
     if (gestao.managed) {
       return await responder('Esse cargo pertence a um bot ou integração. Escolha o cargo da sua Gestão.');
@@ -139,51 +117,51 @@ async function configurarCanais(interaction) {
       return await responder('Cada função precisa de um canal diferente (painel, análise, aprovadas e logs).');
     }
 
-    // 3. O bot tem o que precisa? ----------------------------------------------
+    // 3. O bot consegue trabalhar em cada canal? (só confere; não altera nada) -------------
     const eu = await guild.members.fetchMe();
-    const faltandoNoServidor = [P.ManageRoles, ...PERMISSOES_DO_BOT].filter(p => !eu.permissions.has(p));
-    if (faltandoNoServidor.length) {
-      return await responder(
-        `Faltam permissões para o bot: **${nomesPt(faltandoNoServidor).join(', ')}**. ` +
-          'Ajuste o cargo dele e rode o comando de novo. (Gerenciar Cargos é usado só para deixar a análise privada.)'
-      );
-    }
-
-    // Nos canais que o bot não vai reconfigurar (painel e aprovadas) ele precisa já ter acesso
-    const problemas = [];
-    for (const canal of [painel, publico]) {
-      const permissoes = canal.permissionsFor(eu);
-      const faltando = PERMISSOES_NOS_CANAIS_ABERTOS.filter(p => !permissoes || !permissoes.has(p));
-      if (faltando.length) problemas.push(`<#${canal.id}>: ${nomesPt(faltando).join(', ')}`);
-    }
-    if (problemas.length) {
-      return await responder(
-        `O bot não tem acesso suficiente nestes canais:\n${problemas.join('\n')}\nLibere e rode o comando de novo.`
-      );
-    }
-
-    // 4. Gestão e todos acima dela ----------------------------------------------
+    const bloqueios = [];
     const avisos = [];
-    let staff = cargosGestaoMais(guild, gestao);
-    if (staff.length > MAX_CARGOS_STAFF) {
-      avisos.push(
-        `Havia ${staff.length} cargos de Gestão ou acima; o Discord limita as permissões de um canal, ` +
-          `então ficaram os ${MAX_CARGOS_STAFF} mais próximos da Gestão (os mais altos costumam ser Administradores, que já veem tudo).`
-      );
-      staff = staff.slice(0, MAX_CARGOS_STAFF);
+    const porCanal = [
+      ['painel', painel],
+      ['analise', analise],
+      ['publico', publico],
+      ['logs', logs]
+    ];
+    for (const [chave, canal] of porCanal) {
+      if (!canal) continue;
+      const permissoes = canal.permissionsFor(eu);
+      const faltando = PERMISSOES_POR_CANAL[chave].precisa.filter(p => !permissoes || !permissoes.has(p));
+      if (!faltando.length) continue;
+      const linha = `<#${canal.id}>: ${nomesPt(faltando).join(', ')}`;
+      // Um canal de logs antigo (não escolhido agora) não deve impedir a configuração nova
+      if (chave === 'logs' && !informouLogs) avisos.push(`O bot não tem acesso ao canal de logs salvo — ${linha}`);
+      else bloqueios.push(linha);
     }
-    if (!staff.some(c => c.id === gestao.id)) staff.unshift(gestao);
+    if (bloqueios.length) {
+      return await responder(
+        `O bot não tem acesso suficiente nestes canais:\n${bloqueios.join('\n')}\n` +
+          'Libere nas permissões do canal e rode o comando de novo. (O bot não altera permissões sozinho.)'
+      );
+    }
 
-    // 5. Deixa análise (e logs) visíveis só para a Gestão+ ---------------------
-    // ATENÇÃO: substitui as permissões desses canais (é o que garante que ninguém mais veja).
-    const contexto = { guild, botId: interaction.client.user.id, staff };
-    await analise.permissionOverwrites.set(sobrescritasPrivadas(contexto), motivo);
-    if (logs) await logs.permissionOverwrites.set(sobrescritasPrivadas(contexto), motivo);
+    // 4. Avisos de leitura: algo que provavelmente não é o que você quer --------------------
+    const paraTodos = guild.roles.everyone;
+    for (const [nome, canal] of [['análise', analise], ['logs', logs]]) {
+      if (!canal || !paraTodos) continue;
+      const permissoes = canal.permissionsFor(paraTodos);
+      if (permissoes && permissoes.has(P.ViewChannel)) {
+        avisos.push(`O canal de ${nome} (<#${canal.id}>) está visível para @everyone: qualquer membro poderia ler as confissões antes da aprovação.`);
+      }
+    }
+    const gestaoNaAnalise = analise.permissionsFor(gestao);
+    if (gestaoNaAnalise && !gestaoNaAnalise.has(P.ViewChannel)) {
+      avisos.push(`O cargo <@&${gestao.id}> ainda não enxerga <#${analise.id}>: libere nas permissões do canal para a Gestão conseguir aprovar.`);
+    }
 
-    // 6. Painel de envio ---------------------------------------------------------
+    // 5. Painel de envio ---------------------------------------------------------------
     const mensagem = await publicarPainel(painel, configAnterior);
 
-    // 7. Salva (só depois que tudo deu certo) -------------------------------------
+    // 6. Salva (só depois que tudo deu certo) -------------------------------------------
     db.salvarConfig(guild.id, {
       cargoGestaoId: gestao.id,
       canalPainelId: painel.id,
@@ -193,7 +171,7 @@ async function configurarCanais(interaction) {
       painelMensagemId: mensagem.id
     });
 
-    // 8. Resumo -----------------------------------------------------------------------
+    // 7. Resumo -----------------------------------------------------------------------------
     const linhasEnv = [
       `GESTAO_ROLE_ID=${gestao.id}`,
       `ANALISE_CHANNEL_ID=${analise.id}`,
@@ -206,20 +184,23 @@ async function configurarCanais(interaction) {
       .setColor('#57F287')
       .addFields(
         { name: '📝 Painel de envio', value: `<#${painel.id}> — painel postado` },
-        {
-          name: '🔒 Análise (Aprovar / Recusar)',
-          value: `<#${analise.id}>\nPrivado: só Gestão e acima veem e decidem`
-        },
+        { name: '🔍 Análise (Aprovar / Recusar)', value: `<#${analise.id}>` },
         { name: '📢 Confissões aprovadas', value: `<#${publico.id}>` },
         {
           name: '🧾 Registro de decisões',
           value: logs
-            ? `<#${logs.id}>${informouLogs ? '' : ' (mantido da configuração anterior)'}\nPrivado: só Gestão e acima`
+            ? `<#${logs.id}>${informouLogs ? '' : ' (mantido da configuração anterior)'}`
             : 'Não configurado (opcional: use `canal-logs`)'
         },
         {
-          name: `👥 Gestão e acima (${staff.length})`,
-          value: `Cargo escolhido: <@&${gestao.id}>\n${listarCargos(staff)}`
+          name: '👥 Quem aprova, recusa e consulta autor',
+          value: `<@&${gestao.id}> e todos os cargos acima dele (e Administradores)`
+        },
+        {
+          name: '🔧 Permissões dos canais',
+          value:
+            'O bot **não alterou** permissões nem configurações de nenhum canal. Você controla quem vê e quem ' +
+            'escreve em cada um: o bot só precisa conseguir enviar mensagens (e anexar arquivos) neles.'
         },
         {
           name: 'Host sem disco persistente (ex.: Render free)?',
@@ -228,10 +209,7 @@ async function configurarCanais(interaction) {
             `${linhasEnv.join('\n')}\n` +
             '```'
         }
-      )
-      .setFooter({
-        text: 'Criou um cargo novo acima da Gestão? Rode /configurar-confissoes de novo para ele ver a análise.'
-      });
+      );
 
     if (avisos.length) embed.addFields({ name: '⚠️ Atenção', value: avisos.join('\n').slice(0, 1000) });
 
@@ -240,7 +218,7 @@ async function configurarCanais(interaction) {
     console.error('[CONFIGURAR] Falha:', erro);
     const semPermissao = erro && (erro.code === 50013 || erro.code === 50001);
     const dica = semPermissao
-      ? 'Faltou permissão. Confira se o bot tem **Gerenciar Cargos** e acesso aos canais escolhidos e, se continuar, suba o cargo do bot na lista de cargos.'
+      ? 'Faltou permissão. Confira se o bot tem acesso aos canais escolhidos (Ver Canais, Enviar Mensagens, Inserir Links e Anexar Arquivos).'
       : `Erro: ${String((erro && erro.message) || erro).slice(0, 300)}`;
     try {
       await interaction.editReply({ content: `Não consegui terminar a configuração. ${dica}` });

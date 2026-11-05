@@ -1,6 +1,6 @@
 {
   "name": "bot-confissoes",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Bot de confissões anônimas com aprovação da Gestão, otimizado para servidores de 250k+ membros",
   "main": "index.js",
   "engines": {
@@ -11,7 +11,7 @@
     "deploy": "node deploy-commands.js"
   },
   "dependencies": {
-    "discord.js": "^14.19.3",
+    "discord.js": "^14.24.2",
     "dotenv": "^16.4.5"
   }
 }

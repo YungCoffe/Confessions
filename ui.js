@@ -4,8 +4,12 @@ const {
   ButtonBuilder,
   ButtonStyle,
   ModalBuilder,
+  LabelBuilder,
   TextInputBuilder,
-  TextInputStyle
+  TextInputStyle,
+  FileUploadBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder
 } = require('discord.js');
 
 const EMOJI_STATUS = { pendente: '⏳', aprovada: '✅', recusada: '❌' };
@@ -15,18 +19,26 @@ const ID_BOTAO_ENVIAR = 'abrir_modal_confissao';
 const ID_BOTAO_MINHAS = 'minhas_confissoes';
 const ID_MODAL = 'modal_confissao';
 const ID_CAMPO_TEXTO = 'texto_confissao';
-const ID_CAMPO_MENSAGEM = 'mensagem_confissao';
+const ID_CAMPO_FOTO = 'foto_confissao';
+// Um menu aceita no máximo 25 opções; com mais figurinhas o formulário ganha um 2º menu (até 50 no total)
+const IDS_CAMPO_FIGURINHA = ['figurinha_confissao', 'figurinha_confissao_2'];
 
 const LIMITE_TEXTO = 2000;
-const LIMITE_MENSAGEM = 1000; // cabe no campo de embed (máx. 1024)
+const POR_MENU = 25;
+const MAX_FIGURINHAS = POR_MENU * IDS_CAMPO_FIGURINHA.length;
+
+function cortar(texto, limite) {
+  const t = String(texto || '');
+  return t.length > limite ? `${t.slice(0, limite - 1)}…` : t;
+}
 
 function painelConfissoes() {
   const embed = new EmbedBuilder()
     .setTitle('🔒 Painel de Confissões')
     .setDescription(
       'Clique em **Enviar Confissão** para mandar uma confissão de forma anônima.\n' +
-        'Se quiser, você pode mandar uma **mensagem junto** da confissão (é opcional).\n' +
-        'Ela será analisada pela **Gestão e por cargos acima** antes de ser publicada.\n\n' +
+        'Se quiser, você pode mandar uma **foto** ou uma **figurinha do servidor** junto (é opcional).\n' +
+        'Tudo é analisado pela **Gestão e por cargos acima** antes de ser publicado.\n\n' +
         'Você recebe um **código de rastreio** e será avisado no **PV** quando ela for aprovada ou recusada ' +
         '(deixe suas mensagens diretas abertas). Para consultar seus códigos e o status, clique em ' +
         '**Minhas Confissões**.'
@@ -49,31 +61,68 @@ function painelConfissoes() {
   return { embeds: [embed], components: [row] };
 }
 
-function modalConfissao() {
+// figurinhas: [{ id, name, description }] do servidor (pode vir vazio: o formulário fica sem o menu)
+function modalConfissao(figurinhas = []) {
   const inputTexto = new TextInputBuilder()
     .setCustomId(ID_CAMPO_TEXTO)
-    .setLabel(`Sua Confissão (até ${LIMITE_TEXTO} caracteres)`)
     .setStyle(TextInputStyle.Paragraph)
     .setPlaceholder('Escreva aqui...')
     .setRequired(true)
     .setMaxLength(LIMITE_TEXTO);
 
-  // Opcional: a pessoa só preenche se quiser mandar um recado junto da confissão
-  const inputMensagem = new TextInputBuilder()
-    .setCustomId(ID_CAMPO_MENSAGEM)
-    .setLabel('Mensagem junto da confissão (opcional)')
-    .setStyle(TextInputStyle.Paragraph)
-    .setPlaceholder('Quer mandar um recado junto? Escreva aqui (pode deixar em branco)')
-    .setRequired(false)
-    .setMaxLength(LIMITE_MENSAGEM);
+  const modal = new ModalBuilder().setCustomId(ID_MODAL).setTitle('Escreva sua Confissão');
 
-  return new ModalBuilder()
-    .setCustomId(ID_MODAL)
-    .setTitle('Escreva sua Confissão')
-    .addComponents(
-      new ActionRowBuilder().addComponents(inputTexto),
-      new ActionRowBuilder().addComponents(inputMensagem)
+  modal.addLabelComponents(
+    new LabelBuilder()
+      .setLabel(`Sua Confissão (até ${LIMITE_TEXTO} caracteres)`)
+      .setTextInputComponent(inputTexto)
+  );
+
+  // Opcional: uma imagem que vai junto da confissão
+  modal.addLabelComponents(
+    new LabelBuilder()
+      .setLabel('Foto (opcional)')
+      .setDescription('Se quiser, mande uma imagem junto: PNG, JPG, GIF ou WEBP')
+      .setFileUploadComponent(
+        new FileUploadBuilder()
+          .setCustomId(ID_CAMPO_FOTO)
+          .setMinValues(0)
+          .setMaxValues(1)
+          .setRequired(false)
+      )
+  );
+
+  // Opcional: uma figurinha do próprio servidor
+  const lista = figurinhas.slice(0, MAX_FIGURINHAS);
+  for (let i = 0; i * POR_MENU < lista.length; i++) {
+    const grupo = lista.slice(i * POR_MENU, (i + 1) * POR_MENU);
+
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId(IDS_CAMPO_FIGURINHA[i])
+      .setPlaceholder('Escolher figurinha (ou deixe em branco)')
+      .setRequired(false)
+      .setMinValues(0)
+      .setMaxValues(1)
+      .addOptions(
+        grupo.map(f => {
+          const opcao = new StringSelectMenuOptionBuilder().setLabel(cortar(f.name, 100)).setValue(f.id);
+          return f.description ? opcao.setDescription(cortar(f.description, 100)) : opcao;
+        })
+      );
+
+    modal.addLabelComponents(
+      new LabelBuilder()
+        .setLabel(i === 0 ? 'Figurinha do servidor (opcional)' : 'Mais figurinhas (opcional)')
+        .setDescription(
+          i === 0
+            ? 'Se quiser, escolha uma figurinha para ir junto da confissão'
+            : 'Mais figurinhas do servidor (escolha só uma no total)'
+        )
+        .setStringSelectMenuComponent(menu)
     );
+  }
+
+  return modal;
 }
 
 module.exports = {
@@ -82,7 +131,9 @@ module.exports = {
   ID_BOTAO_MINHAS,
   ID_MODAL,
   ID_CAMPO_TEXTO,
-  ID_CAMPO_MENSAGEM,
+  ID_CAMPO_FOTO,
+  IDS_CAMPO_FIGURINHA,
+  MAX_FIGURINHAS,
   painelConfissoes,
   modalConfissao
 };

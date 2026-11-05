@@ -222,14 +222,15 @@ function normalizar(codigo) {
 // ---------------------------------------------------------------------------
 // Confissões
 // ---------------------------------------------------------------------------
-function criarConfissao({ userId, autorTag, guildId, texto, mensagem }) {
+function criarConfissao({ userId, autorTag, guildId, texto, temFoto, figurinhaId }) {
   const registro = {
     codigo: gerarCodigo(),
     userId,
     autorTag, // vínculo com o autor: existe SOMENTE aqui, nunca no canal de análise nem no público
     guildId,
     texto,
-    mensagem: mensagem || null, // recado opcional enviado junto da confissão
+    temFoto: Boolean(temFoto), // foto opcional anexada (o arquivo fica só na mensagem de análise)
+    figurinhaId: figurinhaId || null, // figurinha opcional do servidor
     status: 'pendente', // pendente | aprovada | recusada
     criadoEm: Date.now(),
     decididoEm: null,

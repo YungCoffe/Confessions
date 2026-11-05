@@ -28,15 +28,6 @@ function cargoReferencia(guild) {
   return candidatos.sort((a, b) => b.position - a.position).first() || null;
 }
 
-// Cargos que enxergam os canais privados: a Gestão e todos acima dela.
-// Ignora @everyone e cargos de bots/integrações (managed) para não vazar confissões a outros bots.
-function cargosGestaoMais(guild, referencia) {
-  return guild.roles.cache
-    .filter(cargo => cargo.id !== guild.id && !cargo.managed && cargo.position >= referencia.position)
-    .sort((a, b) => a.position - b.position)
-    .map(cargo => cargo);
-}
-
 function posicoesDosCargos(member, guild) {
   const cargos = member.roles;
   if (cargos && cargos.cache) return cargos.cache.map(cargo => cargo.position);
@@ -63,4 +54,4 @@ function podeAprovar(interaction) {
   return posicoesDosCargos(member, guild).some(posicao => posicao >= referencia.position);
 }
 
-module.exports = { podeAprovar, cargoReferencia, cargosGestaoMais };
+module.exports = { podeAprovar, cargoReferencia };
