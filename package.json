@@ -1,5 +1,5 @@
 {
-  "name": "bot-confissoes",
+  "name": "natalino",
   "version": "1.7.0",
   "description": "Bot de confissões anônimas com aprovação da Gestão, otimizado para servidores de 250k+ membros",
   "main": "index.js",
