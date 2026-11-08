@@ -3,6 +3,7 @@ const {
   GatewayIntentBits,
   Options,
   Events,
+  ActivityType,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
@@ -12,13 +13,22 @@ const {
   REST,
   Routes
 } = require('discord.js');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config(); // precisa vir antes de db/permissoes/configurar (eles leem o .env ao carregar)
 const { iniciarServidor } = require('./servidor');
 const commands = require('./commands');
 const db = require('./db');
 const { podeAprovar } = require('./permissoes');
 const {
+  TEMA_NATAL,
   modalConfissao,
+  painelConfissoes,
+  textoContagemNatal,
+  textoContagemAnoNovo,
+  mensagemDeNatal,
+  ehHoraDoRecadoDeNatal,
+  dataNoBrasil,
   EMOJI_STATUS,
   ID_BOTAO_ENVIAR,
   ID_BOTAO_MINHAS,
@@ -119,6 +129,132 @@ const servidorHttp = iniciarServidor({ porta: PORT, status: statusAtual });
 // ---------------------------------------------------------------------------
 function citarCodigo(codigo) {
   return `\`${codigo}\``;
+}
+
+// ---------------------------------------------------------------------------
+// Cartão do mural: cada confissão publicada sai com um enfeite natalino diferente
+// (a cor e a saudação são sempre as mesmas para o mesmo código)
+// ---------------------------------------------------------------------------
+const CORES_MURAL = [TEMA_NATAL.verde, TEMA_NATAL.vermelho, TEMA_NATAL.dourado];
+const SAUDACOES_MURAL = [
+  '🎅 Mais uma carta entregue pelo Correio de Natal!',
+  '🔔 Os sinos tocaram: confissão nova no mural!',
+  '🕯️ Uma nova confissão iluminou o mural.',
+  '⭐ O Papai Noel deixou esta carta por aqui.'
+];
+const ENFEITE_TOPO = '❄️ ─────────── ✦ ─────────── ❄️';
+const ENFEITE_BASE = '❄️ ─────────── 🎄 ─────────── ❄️';
+
+function somaDoCodigo(codigo) {
+  const texto = String(codigo || '');
+  let soma = 0;
+  for (let i = 0; i < texto.length; i++) soma += texto.charCodeAt(i);
+  return soma;
+}
+
+function enfeiteDoCodigo(codigo) {
+  const soma = somaDoCodigo(codigo);
+  return {
+    cor: CORES_MURAL[soma % CORES_MURAL.length],
+    saudacao: SAUDACOES_MURAL[soma % SAUDACOES_MURAL.length]
+  };
+}
+
+// Capas de Natal: ficam na pasta imagens/, ao lado do index.js.
+// A capa é sorteada pelo código da confissão (sempre a mesma para a mesma carta).
+const PASTA_CAPAS = path.join(__dirname, 'imagens');
+const NOMES_CAPAS = ['capa-natal-1.png', 'capa-natal-2.png', 'capa-natal-3.png', 'capa-natal-4.png'];
+const CAPAS_DISPONIVEIS = NOMES_CAPAS.map(nome => ({ nome, caminho: path.join(PASTA_CAPAS, nome) }))
+  .filter(capa => fs.existsSync(capa.caminho));
+const bufferCapas = new Map();
+
+if (CAPAS_DISPONIVEIS.length === 0) {
+  console.warn(
+    '[CAPAS] Nenhuma capa encontrada em imagens/. O mural continua funcionando, só não terá a faixa de Natal no topo.'
+  );
+}
+
+// Devolve o arquivo da capa pronto para anexar (ou null se a pasta não existir)
+function capaDoMural(codigo) {
+  if (CAPAS_DISPONIVEIS.length === 0) return null;
+  const capa = CAPAS_DISPONIVEIS[somaDoCodigo(codigo) % CAPAS_DISPONIVEIS.length];
+  if (!bufferCapas.has(capa.nome)) {
+    try {
+      bufferCapas.set(capa.nome, fs.readFileSync(capa.caminho));
+    } catch (erro) {
+      console.warn(`[CAPAS] Não consegui ler ${capa.nome}:`, erro.message);
+      return null;
+    }
+  }
+  return { attachment: bufferCapas.get(capa.nome), name: capa.nome };
+}
+
+// ---------------------------------------------------------------------------
+// Contagem regressiva: reedita o painel de cada servidor só quando o número de
+// dias muda (uma edição por dia, no máximo — nada de ficar editando à toa)
+// ---------------------------------------------------------------------------
+const ultimaContagemDoPainel = new Map();
+
+async function atualizarPaineisDeNatal(client) {
+  // a chave inclui as duas contagens (Natal e Ano Novo), para o painel ser
+  // reeditado também quando o campo do Ano Novo entra ou sai
+  const texto = `${textoContagemNatal()}|${textoContagemAnoNovo() ?? ''}`;
+
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      const config = db.obterConfig(guild.id);
+      if (!config || !config.canalPainelId || !config.painelMensagemId) continue;
+      if (ultimaContagemDoPainel.get(guild.id) === texto) continue;
+
+      const canal =
+        guild.channels.cache.get(config.canalPainelId) ||
+        (await guild.channels.fetch(config.canalPainelId).catch(() => null));
+      if (!canal) continue;
+
+      const mensagem = await canal.messages.fetch(config.painelMensagemId).catch(() => null);
+      if (!mensagem) continue;
+
+      await mensagem.edit(painelConfissoes());
+      ultimaContagemDoPainel.set(guild.id, texto);
+      console.log(`[NATAL] Painel de ${guild.name} atualizado: ${texto.replace('|', ' • ')}`);
+    } catch (erro) {
+      console.warn(`[NATAL] Não consegui atualizar a contagem em ${guild.name}:`, erro.message);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Recado de Feliz Natal no canal de aprovadas: sai uma vez por servidor, no dia
+// 25 (a partir das 9h de Brasília). O ano do último recado fica salvo na
+// configuração do servidor, então reiniciar o bot no dia 25 não repete a mensagem.
+// ---------------------------------------------------------------------------
+const servidoresComRecadoDeNatal = new Set();
+
+async function enviarRecadoDeNatal(client, agora = new Date()) {
+  if (!ehHoraDoRecadoDeNatal(agora)) return;
+  const ano = dataNoBrasil(agora).ano;
+
+  for (const guild of client.guilds.cache.values()) {
+    if (servidoresComRecadoDeNatal.has(guild.id)) continue;
+
+    try {
+      const config = db.obterConfig(guild.id) || {};
+      if (config.recadoNatalAno === ano) {
+        servidoresComRecadoDeNatal.add(guild.id);
+        continue;
+      }
+
+      const canal = resolverCanal(guild, 'publico');
+      if (!canal) continue;
+
+      await canal.send({ ...mensagemDeNatal(agora), allowedMentions: MENTIONS_NULAS });
+      db.salvarConfig(guild.id, { ...config, recadoNatalAno: ano });
+      servidoresComRecadoDeNatal.add(guild.id);
+      console.log(`[NATAL] Recado de Feliz Natal enviado em ${guild.name} (#${canal.name}).`);
+    } catch (erro) {
+      console.warn(`[NATAL] Não consegui enviar o recado de Natal em ${guild.name}:`, erro.message);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -228,14 +364,14 @@ function checarLimites(userId) {
     const anterior = ultimoEnvio.get(userId) || 0;
     const esperar = COOLDOWN_SEGUNDOS * 1000 - (agora - anterior);
     if (esperar > 0) {
-      return `Calma! Espere mais **${Math.ceil(esperar / 1000)}s** para enviar outra confissão.`;
+      return `❄️ Calma! Espere mais **${Math.ceil(esperar / 1000)}s** para enviar outra confissão.`;
     }
   }
 
   if (LIMITE_DIARIO > 0) {
     const enviadas = db.contarDoUsuarioDesde(userId, agora - 24 * 60 * 60 * 1000);
     if (enviadas >= LIMITE_DIARIO) {
-      return `Você atingiu o limite de **${LIMITE_DIARIO} confissões** em 24h. Tente mais tarde.`;
+      return `🎁 Você atingiu o limite de **${LIMITE_DIARIO} confissões** em 24h. Tente mais tarde.`;
     }
   }
 
@@ -259,10 +395,10 @@ async function avisarAutor({ guild, registro, aprovada, canalPublico, mensagemPu
   const codigo = citarCodigo(registro.codigo);
   let conteudo;
   if (aprovada) {
-    conteudo = `✅ Sua confissão foi aprovada em <#${canalPublico.id}>!\nCódigo: ${codigo}`;
+    conteudo = `🎁 Sua confissão foi aprovada em <#${canalPublico.id}>! Feliz Natal! 🎄\nCódigo: ${codigo}`;
     if (mensagemPublica && mensagemPublica.url) conteudo += ` • [ver publicação](${mensagemPublica.url})`;
   } else {
-    conteudo = `❌ Sua confissão foi recusada pela Gestão.\nCódigo: ${codigo}`;
+    conteudo = `🚫 Sua confissão foi recusada pela Gestão.\nCódigo: ${codigo}`;
   }
 
   try {
@@ -345,14 +481,14 @@ client.on(Events.InteractionCreate, async interaction => {
 
       if (!registros.length) {
         return await interaction.reply({
-          content: 'Você ainda não enviou nenhuma confissão. Clique em **Enviar Confissão** no painel.',
+          content: '❄️ Você ainda não enviou nenhuma confissão. Clique em **Enviar Confissão** no painel. 🎁',
           flags: EPHEMERAL
         });
       }
 
       const embed = new EmbedBuilder()
-        .setTitle('📨 Suas Confissões')
-        .setColor('#5865F2')
+        .setTitle('🎁 Suas Confissões')
+        .setColor(TEMA_NATAL.vermelho)
         .setDescription(
           registros
             .map(
@@ -363,7 +499,7 @@ client.on(Events.InteractionCreate, async interaction => {
             )
             .join('\n')
         )
-        .setFooter({ text: 'Esta mensagem é visível apenas para você.' });
+        .setFooter({ text: '❄️ Só você vê esta mensagem • Feliz Natal!' });
 
       return await interaction.reply({ embeds: [embed], flags: EPHEMERAL });
     }
@@ -392,7 +528,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       const embed = new EmbedBuilder()
         .setTitle(`🔎 Confissão ${registro.codigo}`)
-        .setColor('#EB459E')
+        .setColor(TEMA_NATAL.dourado)
         .addFields(
           {
             name: 'Autor',
@@ -485,9 +621,9 @@ client.on(Events.InteractionCreate, async interaction => {
       // A descrição comporta 4096 caracteres (o campo "value" de embed só aguenta 1024).
       // O autor NÃO aparece aqui: só o código de rastreio, que remete ao banco.
       const embedAnalise = new EmbedBuilder()
-        .setTitle('📩 Nova Confissão para Análise')
+        .setTitle('🎁 Nova Confissão para Análise ❄️')
         .setDescription(texto)
-        .setColor('#FEE75C')
+        .setColor(TEMA_NATAL.dourado)
         .setTimestamp()
         .addFields(
           { name: 'Código de rastreio', value: citarCodigo(registro.codigo), inline: true },
@@ -497,17 +633,19 @@ client.on(Events.InteractionCreate, async interaction => {
             inline: true
           }
         )
-        .setFooter({ text: 'Autor oculto — use /autor-confissao com o código para identificar' });
+        .setFooter({ text: '🎄 Autor oculto — use /autor-confissao com o código para identificar' });
 
       const rowAprovacao = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`aprovar_${registro.codigo}`)
           .setLabel('Aprovar')
-          .setStyle(ButtonStyle.Success),
+          .setStyle(ButtonStyle.Success)
+          .setEmoji('🎁'),
         new ButtonBuilder()
           .setCustomId(`recusar_${registro.codigo}`)
           .setLabel('Recusar')
           .setStyle(ButtonStyle.Danger)
+          .setEmoji('🚫')
       );
 
       const payloadAnalise = {
@@ -539,10 +677,10 @@ client.on(Events.InteractionCreate, async interaction => {
 
       return await interaction.editReply({
         content:
-          `Sua confissão foi enviada para análise. Guarde o código ${citarCodigo(registro.codigo)}.\n` +
+          `🎄 Sua confissão foi enviada para análise. Guarde o código ${citarCodigo(registro.codigo)}.\n` +
           (semFigurinha ? 'A figurinha escolhida não está disponível, então ela foi enviada sem a figurinha.\n' : '') +
           'Você será avisado no PV quando a Gestão decidir (deixe suas mensagens diretas abertas) ' +
-          'ou acompanhe pelo botão **Minhas Confissões** do painel.'
+          'ou acompanhe pelo botão **Minhas Confissões** do painel. ❄️'
       });
     }
 
@@ -624,12 +762,29 @@ client.on(Events.InteractionCreate, async interaction => {
             }
           }
 
+          // Cartão do mural: bem decorado, mas o texto da pessoa fica no centro das atenções
+          const enfeite = enfeiteDoCodigo(registro.codigo);
           const embedPublico = new EmbedBuilder()
-            .setTitle('🗣️ Confissão Anônima')
-            .setDescription(registro.texto)
-            .setColor('#57F287')
+            .setAuthor({ name: '🎄 Correio de Natal — carta anônima' })
+            .setTitle('🎁 Confissão Anônima')
+            .setDescription(
+              `${ENFEITE_TOPO}\n\n${registro.texto}\n\n${ENFEITE_BASE}\n-# ${enfeite.saudacao}`
+            )
+            .setColor(enfeite.cor)
+            .addFields(
+              {
+                name: '🕯️ Publicada',
+                value: `<t:${Math.floor(Date.now() / 1000)}:R>`,
+                inline: true
+              },
+              {
+                name: '🎄 Contagem de Natal',
+                value: textoContagemNatal(),
+                inline: true
+              }
+            )
             .setTimestamp()
-            .setFooter({ text: `Código ${registro.codigo}` });
+            .setFooter({ text: `🎁 Código ${registro.codigo} • Feliz Natal!` });
 
           const payloadPublico = { embeds: [embedPublico], allowedMentions: MENTIONS_NULAS };
           if (arquivoFoto) {
@@ -638,11 +793,32 @@ client.on(Events.InteractionCreate, async interaction => {
           }
           if (registro.figurinhaId) payloadPublico.stickers = [registro.figurinhaId];
 
+          // Faixa de Natal: vai numa mensagem logo acima do cartão (o Discord só desenha a imagem
+          // do embed depois do texto, então a capa precisa de uma mensagem própria para ficar "no topo")
+          let mensagemCapa = null;
+          const capa = capaDoMural(codigo);
+          if (capa) {
+            try {
+              mensagemCapa = await canalPublico.send({ files: [capa], allowedMentions: MENTIONS_NULAS });
+            } catch (erro) {
+              console.warn(`[CAPAS] Não consegui enviar a capa da confissão ${codigo}:`, erro.message);
+            }
+          }
+
+
           // Se o envio falhar, a confissão continua pendente (dá para tentar de novo)
           try {
             ({ mensagem: mensagemPublica } = await enviarComFallback(canalPublico, payloadPublico));
           } catch (erro) {
             console.error(`[ERRO] Não consegui publicar a confissão ${codigo} em #${canalPublico.name}:`, erro);
+            // Não deixa a faixa de Natal sozinha no canal se o cartão não foi publicado
+            if (mensagemCapa) {
+              try {
+                await mensagemCapa.delete();
+              } catch (erroCapa) {
+                console.warn('[CAPAS] Não consegui remover a capa órfã:', erroCapa.message);
+              }
+            }
             return await interaction.followUp({
               content:
                 `Não consegui publicar em <#${canalPublico.id}>. Confira se o bot tem **Ver Canal, Enviar Mensagens ` +
@@ -663,8 +839,8 @@ client.on(Events.InteractionCreate, async interaction => {
         // A decisão já está salva; falha ao atualizar a mensagem não pode virar "erro" para quem clicou
         try {
           const embedAtualizado = EmbedBuilder.from(embedOriginal)
-            .setTitle(aprovando ? '✅ Confissão Aprovada' : '❌ Confissão Recusada')
-            .setColor(aprovando ? '#57F287' : '#ED4245')
+            .setTitle(aprovando ? '🎁 Confissão Aprovada' : '🚫 Confissão Recusada')
+            .setColor(aprovando ? TEMA_NATAL.verde : TEMA_NATAL.vermelho)
             .addFields({
               name: aprovando ? 'Aprovada por' : 'Recusada por',
               value: `${interaction.user.tag}`
@@ -676,7 +852,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         await registrarLog(
           interaction.guild,
-          `${aprovando ? '✅ Aprovada' : '❌ Recusada'} — ${citarCodigo(codigo)} por <@${interaction.user.id}>`
+          `${aprovando ? '🎁 Aprovada' : '🚫 Recusada'} — ${citarCodigo(codigo)} por <@${interaction.user.id}>`
         );
 
         await avisarAutor({
@@ -714,6 +890,26 @@ client.on(Events.InteractionCreate, async interaction => {
 // então isso dispensa rodar `npm run deploy` manualmente. AUTO_DEPLOY=false desativa.
 client.once(Events.ClientReady, async () => {
   console.log(`[BOT] Conectado como ${client.user.tag}`);
+
+  // Contagem regressiva: mantém o painel com o número de dias certo
+  // e manda o recado de Feliz Natal no dia 25 (uma vez só)
+  await atualizarPaineisDeNatal(client);
+  await enviarRecadoDeNatal(client);
+  const relogioNatal = setInterval(() => {
+    atualizarPaineisDeNatal(client);
+    enviarRecadoDeNatal(client);
+  }, 30 * 60 * 1000);
+  relogioNatal.unref();
+
+  // Presença com tema natalino (puro enfeite, não consome gateway: sem intent de presença)
+  try {
+    client.user.setPresence({
+      status: 'online',
+      activities: [{ name: '🎄 confissões de Natal', type: ActivityType.Watching }]
+    });
+  } catch (erro) {
+    console.warn('[BOT] Não consegui definir a presença:', erro.message);
+  }
 
   // Os nomes chegam um instante depois do READY; este log mostra em quais servidores o bot realmente está
   setTimeout(() => {

@@ -6,7 +6,7 @@ const {
   MessageFlags
 } = require('discord.js');
 const db = require('./db');
-const { painelConfissoes } = require('./ui');
+const { painelConfissoes, TEMA_NATAL } = require('./ui');
 
 const EPHEMERAL = MessageFlags.Ephemeral;
 
@@ -180,10 +180,10 @@ async function configurarCanais(interaction) {
     ].filter(Boolean);
 
     const embed = new EmbedBuilder()
-      .setTitle('✅ Confissões configuradas')
-      .setColor('#57F287')
+      .setTitle('🎄 Confissões configuradas ❄️')
+      .setColor(TEMA_NATAL.verde)
       .addFields(
-        { name: '📝 Painel de envio', value: `<#${painel.id}> — painel postado` },
+        { name: '🎁 Painel de envio', value: `<#${painel.id}> — painel postado` },
         { name: '🔍 Análise (Aprovar / Recusar)', value: `<#${analise.id}>` },
         { name: '📢 Confissões aprovadas', value: `<#${publico.id}>` },
         {
@@ -209,7 +209,8 @@ async function configurarCanais(interaction) {
             `${linhasEnv.join('\n')}\n` +
             '```'
         }
-      );
+      )
+      .setFooter({ text: '🎅 Tudo pronto para o Correio de Natal • Ho Ho Ho!' });
 
     if (avisos.length) embed.addFields({ name: '⚠️ Atenção', value: avisos.join('\n').slice(0, 1000) });
 
